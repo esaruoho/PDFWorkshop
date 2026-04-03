@@ -1,36 +1,56 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# PDF Workshop
 
-## Getting Started
+PDF Workshop is a split-screen OCR workbench for scanned PDFs. Load an image-only PDF, run OCR page by page using Tesseract (client-side) or Google Gemini Vision (API), edit the extracted text, and export a searchable PDF with an invisible text layer -- all from your browser, no server-side processing required for basic OCR.
 
-First, run the development server:
+<!-- screenshot -->
+
+## Features
+
+- **Tesseract OCR** -- client-side OCR powered by tesseract.js, no server needed
+- **Gemini Vision OCR** -- optional AI-powered OCR via Google Gemini API for higher accuracy
+- **Paste from Preview** -- paste text directly from macOS Preview or any clipboard source
+- **Text cleanup** -- edit and clean up OCR results before export
+- **Page-by-page editing** -- navigate and edit each page independently
+- **Undo history** -- full undo stack per page so you never lose work
+- **OCR PDF export** -- export a searchable PDF with invisible text overlay on original pages
+- **Drag and drop** -- drop a PDF file onto the window to load it instantly
+
+## Quick Start
 
 ```bash
+git clone https://github.com/esaruoho/PDFWorkshop.git
+cd PDFWorkshop
+npm install
+./start.sh
+# or
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Then open [http://localhost:3000](http://localhost:3000).
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Gemini Setup
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+Gemini Vision OCR is optional. To enable it:
 
-## Learn More
+1. Get an API key from [Google AI Studio](https://aistudio.google.com/apikey)
+2. Either enter the key in the Settings UI within the app, or copy `.env.local.example` to `.env.local` and add your key there:
 
-To learn more about Next.js, take a look at the following resources:
+```bash
+cp .env.local.example .env.local
+# Edit .env.local and add your Gemini API key
+```
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## Tech Stack
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+- **Next.js 16** (App Router, Turbopack)
+- **React 19**
+- **pdfjs-dist v4** -- PDF rendering in the browser
+- **tesseract.js v7** -- client-side OCR engine
+- **pdf-lib** -- PDF assembly and text layer overlay
+- **Google Generative AI SDK** -- Gemini Vision API integration
+- **Tailwind CSS v4**
+- **TypeScript**
 
-## Deploy on Vercel
+## License
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+MIT -- see [LICENSE](LICENSE) for details.
