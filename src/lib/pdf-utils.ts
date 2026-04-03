@@ -23,17 +23,30 @@ export async function renderPageToCanvas(
   pdfDoc: PDFDocumentProxy,
   pageNumber: number,
   canvas: HTMLCanvasElement,
-  scale: number = 1.5
+  scale: number = 1.5,
+  signal?: AbortSignal
 ) {
   const page = await pdfDoc.getPage(pageNumber);
+  if (signal?.aborted) return canvas;
   const viewport = page.getViewport({ scale });
   canvas.height = viewport.height;
   canvas.width = viewport.width;
   const ctx = canvas.getContext("2d");
   if (!ctx) {
-    throw new Error("Failed to get 2D rendering context from canvas. The browser may not support canvas rendering.");
+    throw new Error("Failed to get 2D rendering context from canvas.");
   }
-  await page.render({ canvasContext: ctx, viewport }).promise;
+  const renderTask = page.render({ canvasContext: ctx, viewport });
+  // Cancel render if the caller aborts
+  if (signal) {
+    signal.addEventListener("abort", () => renderTask.cancel(), { once: true });
+  }
+  try {
+    await renderTask.promise;
+  } catch (err) {
+    // pdf.js throws when a render is cancelled — ignore it
+    if (err instanceof Error && err.message === "Rendering cancelled") return canvas;
+    throw err;
+  }
   return canvas;
 }
 

@@ -21,15 +21,17 @@ export default function PdfViewer({
 
   useEffect(() => {
     if (!pdfDoc || !canvasRef.current) return;
-    let cancelled = false;
+    const controller = new AbortController();
     const canvas = canvasRef.current;
-    renderPageToCanvas(pdfDoc, currentPage, canvas).catch((err) => {
-      if (!cancelled) {
-        console.error("Failed to render PDF page:", err);
+    renderPageToCanvas(pdfDoc, currentPage, canvas, 1.5, controller.signal).catch(
+      (err) => {
+        if (!controller.signal.aborted) {
+          console.error("Failed to render PDF page:", err);
+        }
       }
-    });
+    );
     return () => {
-      cancelled = true;
+      controller.abort();
     };
   }, [pdfDoc, currentPage]);
 
