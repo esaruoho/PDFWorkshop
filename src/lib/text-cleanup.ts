@@ -24,10 +24,10 @@ function collapseBlankLines(text: string): string {
 // Fix common OCR character substitutions
 function fixOcrSubstitutions(text: string): string {
   return text
-    // Common OCR errors
-    .replace(/['']/g, "'")
-    .replace(/[""]/g, '"')
-    .replace(/—/g, "—")
+    // Common OCR errors — smart quotes to straight
+    .replace(/[\u2018\u2019\u201A]/g, "'")
+    .replace(/[\u201C\u201D\u201E]/g, '"')
+    .replace(/[\u2013\u2014]/g, "-")
     .replace(/\bI\b(?=\s+[a-z])/g, "I") // preserve capital I
     .replace(/(?<=\w)l(?=\d)/g, "1") // "l" before digits → "1"
     .replace(/(?<=\d)O(?=\d)/g, "0") // "O" between digits → "0"

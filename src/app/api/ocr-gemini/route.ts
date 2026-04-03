@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { GoogleGenerativeAI } from "@google/generative-ai";
 
 export async function POST(request: NextRequest) {
-  const { imageBase64, apiKey: clientKey } = await request.json();
+  const { imageBase64, apiKey: clientKey, languages } = await request.json();
 
   // Prefer client-provided key, fall back to env var
   const apiKey = clientKey || process.env.GEMINI_API_KEY;
@@ -33,7 +33,11 @@ export async function POST(request: NextRequest) {
           data: base64Data,
         },
       },
-      "Extract ALL text from this scanned document page. Preserve the original formatting, paragraphs, and line breaks as closely as possible. Output only the extracted text, nothing else.",
+      `Extract ALL text from this scanned document page.${
+        languages && languages.length > 0
+          ? ` The document is in ${languages.join(" and ")}.`
+          : ""
+      } Preserve the original formatting, paragraphs, and line breaks as closely as possible. Output only the extracted text, nothing else.`,
     ]);
 
     const text = result.response.text();
