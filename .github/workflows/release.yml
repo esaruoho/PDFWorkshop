@@ -27,20 +27,55 @@ jobs:
       - name: Build
         run: npm run build
 
-      - name: Package release
+      - name: Package Windows release (with bundled Node.js)
         run: |
           VERSION=${GITHUB_REF_NAME}
-          DIR="PDFWorkshop-${VERSION}"
+          NODE_VERSION="20.19.0"
+          DIR="PDFWorkshop-${VERSION}-windows"
           mkdir -p "$DIR"
 
-          # Copy source files (not node_modules or .next)
+          # Download portable Node.js for Windows
+          curl -Lo node.zip "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-win-x64.zip"
+          unzip -q node.zip
+          mv "node-v${NODE_VERSION}-win-x64" "$DIR/node"
+
+          # Copy source files
           cp -r src public "$DIR/"
           cp package.json package-lock.json next.config.ts tsconfig.json \
              postcss.config.mjs eslint.config.mjs vitest.config.ts \
-             start.sh start.bat LICENSE README.md ARCHITECTURE.md "$DIR/"
+             start.bat LICENSE README.md ARCHITECTURE.md "$DIR/"
 
           # Create the zip
-          zip -r "PDFWorkshop-${VERSION}.zip" "$DIR"
+          zip -r "PDFWorkshop-${VERSION}-windows.zip" "$DIR"
+
+      - name: Package Mac/Linux release (with bundled Node.js)
+        run: |
+          VERSION=${GITHUB_REF_NAME}
+          NODE_VERSION="20.19.0"
+
+          # --- macOS arm64 ---
+          DIR_MAC="PDFWorkshop-${VERSION}-mac"
+          mkdir -p "$DIR_MAC"
+          curl -Lo node-mac.tar.gz "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-darwin-arm64.tar.gz"
+          mkdir node-mac && tar xzf node-mac.tar.gz -C node-mac --strip-components=1
+          mv node-mac "$DIR_MAC/node"
+          cp -r src public "$DIR_MAC/"
+          cp package.json package-lock.json next.config.ts tsconfig.json \
+             postcss.config.mjs eslint.config.mjs vitest.config.ts \
+             start.sh LICENSE README.md ARCHITECTURE.md "$DIR_MAC/"
+          zip -r "PDFWorkshop-${VERSION}-mac.zip" "$DIR_MAC"
+
+          # --- Linux x64 ---
+          DIR_LINUX="PDFWorkshop-${VERSION}-linux"
+          mkdir -p "$DIR_LINUX"
+          curl -Lo node-linux.tar.gz "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.gz"
+          mkdir node-linux && tar xzf node-linux.tar.gz -C node-linux --strip-components=1
+          mv node-linux "$DIR_LINUX/node"
+          cp -r src public "$DIR_LINUX/"
+          cp package.json package-lock.json next.config.ts tsconfig.json \
+             postcss.config.mjs eslint.config.mjs vitest.config.ts \
+             start.sh LICENSE README.md ARCHITECTURE.md "$DIR_LINUX/"
+          zip -r "PDFWorkshop-${VERSION}-linux.zip" "$DIR_LINUX"
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -48,13 +83,14 @@ jobs:
           files: PDFWorkshop-*.zip
           generate_release_notes: true
           body: |
-            ## Quick Start
+            ## Quick Start — Zero Install
 
-            1. Install [Node.js](https://nodejs.org) (LTS version)
-            2. Download and unzip `PDFWorkshop-${{ github.ref_name }}.zip`
+            1. Download the zip for your platform
+            2. Unzip it
             3. **Windows:** Double-click `start.bat`
-               **Mac/Linux:** Run `./start.sh`
+               **Mac/Linux:** Double-click `start.sh` (or run `./start.sh`)
             4. Opens in your browser at http://localhost:3000
 
-            No account needed. Tesseract OCR runs entirely in your browser.
+            Node.js is bundled — nothing else to install.
+            Tesseract OCR runs entirely in your browser.
             For Gemini Vision OCR, enter your API key in Settings.
