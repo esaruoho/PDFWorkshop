@@ -1,56 +1,63 @@
 # PDF Workshop
 
-PDF Workshop is a split-screen OCR workbench for scanned PDFs. Load an image-only PDF, run OCR page by page using Tesseract (client-side) or Google Gemini Vision (API), edit the extracted text, and export a searchable PDF with an invisible text layer -- all from your browser, no server-side processing required for basic OCR.
+A split-screen OCR workbench for scanned PDFs. Load an image-only PDF, run OCR page by page using Tesseract or Gemini Vision, edit the extracted text, and export a searchable PDF -- all from your browser.
 
 <!-- screenshot -->
 
-## Features
+## Download & Run
 
-- **Tesseract OCR** -- client-side OCR powered by tesseract.js, no server needed
-- **Gemini Vision OCR** -- optional AI-powered OCR via Google Gemini API for higher accuracy
-- **Paste from Preview** -- paste text directly from macOS Preview or any clipboard source
-- **Text cleanup** -- edit and clean up OCR results before export
-- **Page-by-page editing** -- navigate and edit each page independently
-- **Undo history** -- full undo stack per page so you never lose work
-- **OCR PDF export** -- export a searchable PDF with invisible text overlay on original pages
-- **Drag and drop** -- drop a PDF file onto the window to load it instantly
+### Option 1: Download the release (easiest)
 
-## Quick Start
+1. Install [Node.js](https://nodejs.org) (LTS version -- just click "Next" through the installer)
+2. Download the latest `.zip` from [Releases](https://github.com/esaruoho/PDFWorkshop/releases)
+3. Unzip it
+4. **Windows:** Double-click `start.bat`
+   **Mac/Linux:** Double-click `start.sh` (or run `./start.sh` in Terminal)
+5. The app opens in your browser at http://localhost:3000
+
+### Option 2: Clone the repo
 
 ```bash
 git clone https://github.com/esaruoho/PDFWorkshop.git
 cd PDFWorkshop
 npm install
-./start.sh
-# or
 npm run dev
 ```
 
-Then open [http://localhost:3000](http://localhost:3000).
+## Features
 
-## Gemini Setup
+- **Tesseract OCR** -- runs entirely in your browser, no server needed
+- **Gemini Vision OCR** -- optional AI-powered OCR via Google Gemini API
+- **28 languages** -- select one or more OCR languages in Settings
+- **Paste from Preview** -- paste text from macOS Preview or any clipboard source
+- **Text cleanup** -- fix letter spacing, OCR artifacts, smart quotes, hyphenation
+- **Batch cleanup** -- apply cleanup to all pages at once
+- **Page-by-page editing** -- navigate and edit each page independently
+- **Side-by-side diff** -- compare current text vs previous version
+- **Undo history** -- full undo stack per page
+- **Save/Load projects** -- save your work as `.pdfws` files, resume later
+- **Export OCR PDF** -- searchable PDF with invisible text overlay
+- **Drag and drop** -- drop PDF or `.pdfws` files onto the window
 
-Gemini Vision OCR is optional. To enable it:
+## Gemini Vision Setup (optional)
 
-1. Get an API key from [Google AI Studio](https://aistudio.google.com/apikey)
-2. Either enter the key in the Settings UI within the app, or copy `.env.local.example` to `.env.local` and add your key there:
+Gemini Vision gives better OCR results than Tesseract for complex documents. To enable it:
 
-```bash
-cp .env.local.example .env.local
-# Edit .env.local and add your Gemini API key
-```
+1. Get a free API key from [Google AI Studio](https://aistudio.google.com/apikey)
+2. Click **Settings** in the app and paste your key
+
+The key is stored in your browser only -- never sent anywhere except Google's API.
 
 ## Tech Stack
 
-- **Next.js 16** (App Router, Turbopack)
-- **React 19**
-- **pdfjs-dist v4** -- PDF rendering in the browser
-- **tesseract.js v7** -- client-side OCR engine
-- **pdf-lib** -- PDF assembly and text layer overlay
-- **Google Generative AI SDK** -- Gemini Vision API integration
-- **Tailwind CSS v4**
-- **TypeScript**
+- Next.js 16 (App Router, Turbopack)
+- React 19, TypeScript, Tailwind CSS v4
+- pdfjs-dist v4 -- PDF rendering
+- tesseract.js v7 -- client-side OCR
+- pdf-lib -- PDF export with text layer
+- Google Generative AI SDK -- Gemini Vision
+- Vitest -- testing
 
 ## License
 
-MIT -- see [LICENSE](LICENSE) for details.
+MIT -- see [LICENSE](LICENSE).

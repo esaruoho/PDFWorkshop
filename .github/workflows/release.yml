@@ -1,0 +1,60 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
+      - name: Package release
+        run: |
+          VERSION=${GITHUB_REF_NAME}
+          DIR="PDFWorkshop-${VERSION}"
+          mkdir -p "$DIR"
+
+          # Copy source files (not node_modules or .next)
+          cp -r src public "$DIR/"
+          cp package.json package-lock.json next.config.ts tsconfig.json \
+             postcss.config.mjs eslint.config.mjs vitest.config.ts \
+             start.sh start.bat LICENSE README.md ARCHITECTURE.md "$DIR/"
+
+          # Create the zip
+          zip -r "PDFWorkshop-${VERSION}.zip" "$DIR"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: PDFWorkshop-*.zip
+          generate_release_notes: true
+          body: |
+            ## Quick Start
+
+            1. Install [Node.js](https://nodejs.org) (LTS version)
+            2. Download and unzip `PDFWorkshop-${{ github.ref_name }}.zip`
+            3. **Windows:** Double-click `start.bat`
+               **Mac/Linux:** Run `./start.sh`
+            4. Opens in your browser at http://localhost:3000
+
+            No account needed. Tesseract OCR runs entirely in your browser.
+            For Gemini Vision OCR, enter your API key in Settings.
