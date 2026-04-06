@@ -408,7 +408,9 @@ export default function Home() {
         if (!overwrite && pages[i - 1]?.ocrText) continue;
 
         processed++;
-        setOcrProgress(`${method} — ${processed}/${target} pages...`);
+        const methodLabel = method === "glm-ocr" ? "GLM-OCR" : method;
+        const hint = method === "glm-ocr" && processed === 1 ? " (first page is slowest — model loading)" : "";
+        setOcrProgress(`${methodLabel} — ${processed}/${target} pages...${hint}`);
         try {
           const text = await ocrFn(i);
           if (text) {
