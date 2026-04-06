@@ -272,7 +272,7 @@ export default function OcrEditor({
                 </button>
                 <hr className="border-neutral-700 my-1" />
                 <div className="px-3 py-1.5 text-xs text-neutral-500 font-medium">
-                  GLM-OCR (API) — tables, formulas, layouts
+                  GLM-OCR (local) — tables, formulas, layouts
                 </div>
                 <button
                   data-dropdown-item
