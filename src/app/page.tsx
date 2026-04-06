@@ -52,6 +52,7 @@ export default function Home() {
   const [ocrProgress, setOcrProgress] = useState("");
   const [showSettings, setShowSettings] = useState(false);
   const [geminiKey, setGeminiKey] = useState("");
+  const [glmOcrKey, setGlmOcrKey] = useState("");
   const [isDragging, setIsDragging] = useState(false);
   const [ocrLanguages, setOcrLanguages] = useState<TesseractLanguage[]>([
     "eng",
@@ -64,6 +65,9 @@ export default function Home() {
   useEffect(() => {
     const savedKey = localStorage.getItem("pdf-workshop-gemini-key");
     if (savedKey) setGeminiKey(savedKey);
+
+    const savedGlmKey = localStorage.getItem("pdf-workshop-glm-ocr-key");
+    if (savedGlmKey) setGlmOcrKey(savedGlmKey);
 
     const savedLangs = localStorage.getItem("pdf-workshop-ocr-languages");
     if (savedLangs) {
@@ -97,6 +101,15 @@ export default function Home() {
       localStorage.setItem("pdf-workshop-gemini-key", key);
     } else {
       localStorage.removeItem("pdf-workshop-gemini-key");
+    }
+  };
+
+  const saveGlmOcrKey = (key: string) => {
+    setGlmOcrKey(key);
+    if (key) {
+      localStorage.setItem("pdf-workshop-glm-ocr-key", key);
+    } else {
+      localStorage.removeItem("pdf-workshop-glm-ocr-key");
     }
   };
 
@@ -311,20 +324,49 @@ export default function Home() {
     [pdfDoc, geminiKey, ocrLanguages]
   );
 
+  // --- GLM-OCR ---
+  const runGlmOcr = useCallback(
+    async (pageNum: number) => {
+      if (!pdfDoc) return;
+      const imageData = await getPageAsImageData(pdfDoc, pageNum);
+      const res = await fetch("/api/ocr-glm", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          imageBase64: imageData,
+          apiKey: glmOcrKey,
+        }),
+      });
+      if (!res.ok) {
+        throw new Error(`GLM-OCR API request failed: ${res.status} ${res.statusText}`);
+      }
+      const data = await res.json();
+      if (data.error) throw new Error(data.error);
+      return data.text as string;
+    },
+    [pdfDoc, glmOcrKey]
+  );
+
   // --- OCR single page ---
   const handleOcrPage = useCallback(
-    async (method: "tesseract" | "gemini") => {
+    async (method: "tesseract" | "gemini" | "glm-ocr") => {
       if (method === "gemini" && !geminiKey) {
         setShowSettings(true);
         return;
       }
+      if (method === "glm-ocr" && !glmOcrKey) {
+        setShowSettings(true);
+        return;
+      }
       setIsOcrRunning(true);
-      setOcrProgress(`Running ${method} on page ${currentPage}...`);
+      setOcrProgress(`Running ${method === "glm-ocr" ? "GLM-OCR" : method} on page ${currentPage}...`);
       try {
         const text =
           method === "tesseract"
             ? await runTesseract(currentPage)
-            : await runGemini(currentPage);
+            : method === "gemini"
+              ? await runGemini(currentPage)
+              : await runGlmOcr(currentPage);
         if (text) updatePageText(text, method);
       } catch (err) {
         alert(`OCR error: ${err instanceof Error ? err.message : err}`);
@@ -333,14 +375,18 @@ export default function Home() {
         setOcrProgress("");
       }
     },
-    [currentPage, runTesseract, runGemini, updatePageText, geminiKey]
+    [currentPage, runTesseract, runGemini, runGlmOcr, updatePageText, geminiKey, glmOcrKey]
   );
 
   // --- OCR all pages ---
   const handleOcrAll = useCallback(
-    async (method: "tesseract" | "gemini", overwrite: boolean = false) => {
+    async (method: "tesseract" | "gemini" | "glm-ocr", overwrite: boolean = false) => {
       if (!pdfDoc) return;
       if (method === "gemini" && !geminiKey) {
+        setShowSettings(true);
+        return;
+      }
+      if (method === "glm-ocr" && !glmOcrKey) {
         setShowSettings(true);
         return;
       }
@@ -361,7 +407,7 @@ export default function Home() {
       }
 
       setIsOcrRunning(true);
-      const ocrFn = method === "tesseract" ? runTesseract : runGemini;
+      const ocrFn = method === "tesseract" ? runTesseract : method === "gemini" ? runGemini : runGlmOcr;
       let processed = 0;
       const target = overwrite ? pdfDoc.numPages : emptyCount;
       const failedPages: number[] = [];
@@ -407,7 +453,7 @@ export default function Home() {
         );
       }
     },
-    [pdfDoc, runTesseract, runGemini, geminiKey, pages]
+    [pdfDoc, runTesseract, runGemini, runGlmOcr, geminiKey, glmOcrKey, pages]
   );
 
   // --- Batch cleanup all pages ---
@@ -560,6 +606,29 @@ export default function Home() {
                 aistudio.google.com/apikey
               </span>
               . Stored in your browser only.
+            </p>
+
+            {/* GLM-OCR key */}
+            <label
+              htmlFor="glm-ocr-api-key"
+              className="block text-xs text-neutral-400 mb-1"
+            >
+              GLM-OCR API Key (Zhipu)
+            </label>
+            <input
+              id="glm-ocr-api-key"
+              type="password"
+              value={glmOcrKey}
+              onChange={(e) => saveGlmOcrKey(e.target.value)}
+              placeholder="Enter your Zhipu API key (sk-...)"
+              className="w-full px-3 py-2 text-sm bg-neutral-900 border border-neutral-600 rounded focus:outline-none focus:border-indigo-500"
+            />
+            <p className="text-xs text-neutral-500 mt-1 mb-4">
+              Get a key from{" "}
+              <span className="text-indigo-400">
+                open.bigmodel.cn
+              </span>
+              . #1 on OmniDocBench — best for tables, formulas, complex layouts. Stored in your browser only.
             </p>
 
             {/* Language selection */}

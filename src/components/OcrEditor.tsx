@@ -16,8 +16,8 @@ interface OcrEditorProps {
   totalPages: number;
   isOcrRunning: boolean;
   onTextChange: (text: string, source?: OcrSource) => void;
-  onOcrPage: (method: "tesseract" | "gemini") => void;
-  onOcrAll: (method: "tesseract" | "gemini", overwrite?: boolean) => void;
+  onOcrPage: (method: "tesseract" | "gemini" | "glm-ocr") => void;
+  onOcrAll: (method: "tesseract" | "gemini" | "glm-ocr", overwrite?: boolean) => void;
   onPaste: () => void;
   onUndo: () => void;
   onCleanupAll: (opts: CleanupOptions) => void;
@@ -28,6 +28,7 @@ function sourceLabel(source: OcrSource | null): string {
   const labels: Record<OcrSource, string> = {
     tesseract: "Tesseract",
     gemini: "Gemini",
+    "glm-ocr": "GLM-OCR",
     pasted: "Pasted",
     manual: "Edited",
   };
@@ -39,6 +40,7 @@ function sourceBadgeColor(source: OcrSource | null): string {
   const colors: Record<OcrSource, string> = {
     tesseract: "bg-emerald-800",
     gemini: "bg-purple-800",
+    "glm-ocr": "bg-rose-800",
     pasted: "bg-blue-800",
     manual: "bg-amber-800",
   };
@@ -262,6 +264,43 @@ export default function OcrEditor({
                   role="menuitem"
                   onClick={() => {
                     onOcrAll("gemini", true);
+                    setShowOcrMenu(false);
+                  }}
+                  className="block w-full text-left px-3 py-2 text-xs hover:bg-neutral-700 focus:bg-neutral-700 focus:outline-none text-orange-400"
+                >
+                  All {totalPages} pages (overwrite)
+                </button>
+                <hr className="border-neutral-700 my-1" />
+                <div className="px-3 py-1.5 text-xs text-neutral-500 font-medium">
+                  GLM-OCR (API) — tables, formulas, layouts
+                </div>
+                <button
+                  data-dropdown-item
+                  role="menuitem"
+                  onClick={() => {
+                    onOcrPage("glm-ocr");
+                    setShowOcrMenu(false);
+                  }}
+                  className="block w-full text-left px-3 py-2 text-xs hover:bg-neutral-700 focus:bg-neutral-700 focus:outline-none"
+                >
+                  This page
+                </button>
+                <button
+                  data-dropdown-item
+                  role="menuitem"
+                  onClick={() => {
+                    onOcrAll("glm-ocr", false);
+                    setShowOcrMenu(false);
+                  }}
+                  className="block w-full text-left px-3 py-2 text-xs hover:bg-neutral-700 focus:bg-neutral-700 focus:outline-none"
+                >
+                  Empty pages only
+                </button>
+                <button
+                  data-dropdown-item
+                  role="menuitem"
+                  onClick={() => {
+                    onOcrAll("glm-ocr", true);
                     setShowOcrMenu(false);
                   }}
                   className="block w-full text-left px-3 py-2 text-xs hover:bg-neutral-700 focus:bg-neutral-700 focus:outline-none text-orange-400"

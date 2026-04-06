@@ -1,4 +1,4 @@
-export type OcrSource = "tesseract" | "gemini" | "pasted" | "manual";
+export type OcrSource = "tesseract" | "gemini" | "glm-ocr" | "pasted" | "manual";
 
 export interface PageData {
   pageNumber: number;
