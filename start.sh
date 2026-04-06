@@ -36,6 +36,43 @@ if [ ! -d node_modules ]; then
   npm install
 fi
 
+# --- Start GLM-OCR MLX server in background (Apple Silicon only) ---
+MLX_PID=""
+if [[ "$(uname -m)" == "arm64" && "$(uname)" == "Darwin" ]]; then
+  # Set up MLX venv if not present
+  if [ ! -d ".venv-mlx" ]; then
+    echo ""
+    echo "Setting up GLM-OCR MLX environment (first run only)..."
+    python3.12 -m venv .venv-mlx
+    .venv-mlx/bin/pip install --upgrade pip -q
+    .venv-mlx/bin/pip install "git+https://github.com/Blaizzy/mlx-vlm.git" -q
+    echo "GLM-OCR MLX environment ready."
+  fi
+
+  # Check if MLX server is already running on port 8080
+  if ! curl -s http://localhost:8080/ >/dev/null 2>&1; then
+    echo ""
+    echo "Starting GLM-OCR MLX server on http://localhost:8080 ..."
+    echo "(Model downloads on first run — this may take a few minutes)"
+    .venv-mlx/bin/python -m mlx_vlm.server --trust-remote-code --port 8080 &
+    MLX_PID=$!
+    echo "GLM-OCR MLX server started (PID $MLX_PID)"
+  else
+    echo "GLM-OCR MLX server already running on :8080"
+  fi
+fi
+
+# Clean up MLX server on exit
+cleanup() {
+  if [ -n "$MLX_PID" ]; then
+    echo ""
+    echo "Stopping GLM-OCR MLX server..."
+    kill "$MLX_PID" 2>/dev/null
+    wait "$MLX_PID" 2>/dev/null
+  fi
+}
+trap cleanup EXIT
+
 # Open browser after a short delay
 if command -v open &>/dev/null; then
   (sleep 2 && open http://localhost:3000) &
@@ -45,6 +82,7 @@ fi
 
 echo ""
 echo "PDF Workshop — http://localhost:3000"
+echo "GLM-OCR (local) — http://localhost:8080"
 echo "Press Ctrl+C to stop."
 echo ""
 npm run dev
