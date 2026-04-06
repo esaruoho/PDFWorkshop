@@ -409,8 +409,7 @@ export default function Home() {
 
         processed++;
         const methodLabel = method === "glm-ocr" ? "GLM-OCR" : method;
-        const hint = method === "glm-ocr" && processed === 1 ? " (first page is slowest — model loading)" : "";
-        setOcrProgress(`${methodLabel} — ${processed}/${target} pages...${hint}`);
+        setOcrProgress(`${methodLabel} — ${processed}/${target} pages...`);
         try {
           const text = await ocrFn(i);
           if (text) {

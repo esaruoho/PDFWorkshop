@@ -36,27 +36,68 @@ if [ ! -d node_modules ]; then
   npm install
 fi
 
-# --- Start GLM-OCR MLX server in background (Apple Silicon only) ---
+# --- Start GLM-OCR MLX server (Apple Silicon only) ---
 MLX_PID=""
+MLX_LOG="/tmp/glm-ocr-mlx.log"
+
 if [[ "$(uname -m)" == "arm64" && "$(uname)" == "Darwin" ]]; then
   # Set up MLX venv if not present
   if [ ! -d ".venv-mlx" ]; then
     echo ""
-    echo "Setting up GLM-OCR MLX environment (first run only)..."
+    echo "===== Setting up GLM-OCR MLX environment (first run only) ====="
     python3.12 -m venv .venv-mlx
     .venv-mlx/bin/pip install --upgrade pip -q
-    .venv-mlx/bin/pip install "git+https://github.com/Blaizzy/mlx-vlm.git" -q
-    echo "GLM-OCR MLX environment ready."
+    echo "Installing mlx-vlm (this takes a few minutes)..."
+    .venv-mlx/bin/pip install "git+https://github.com/Blaizzy/mlx-vlm.git"
+    echo "===== GLM-OCR MLX environment ready ====="
+    echo ""
   fi
 
   # Check if MLX server is already running on port 8080
   if ! curl -s http://localhost:8080/ >/dev/null 2>&1; then
     echo ""
-    echo "Starting GLM-OCR MLX server on http://localhost:8080 ..."
-    echo "(Model downloads on first run — this may take a few minutes)"
-    .venv-mlx/bin/python -m mlx_vlm.server --trust-remote-code --port 8080 &
+    echo "===== Starting GLM-OCR MLX server ====="
+    echo "  Port: http://localhost:8080"
+    echo "  Log:  $MLX_LOG"
+    echo ""
+    echo "  First run downloads the model (~1.8 GB) — watch progress below."
+    echo "  After download, model loads into memory (~30s)."
+    echo "  Once you see 'Uvicorn running', the server is ready."
+    echo ""
+
+    # Run MLX server — output visible in terminal AND saved to log
+    .venv-mlx/bin/python -m mlx_vlm.server --trust-remote-code --port 8080 2>&1 | tee "$MLX_LOG" &
     MLX_PID=$!
-    echo "GLM-OCR MLX server started (PID $MLX_PID)"
+
+    # Wait until the server actually responds (model downloaded + loaded)
+    echo "  Waiting for GLM-OCR server to be ready..."
+    TRIES=0
+    MAX_TRIES=300  # 5 minutes max (first download can be slow)
+    while [ $TRIES -lt $MAX_TRIES ]; do
+      if curl -s http://localhost:8080/ >/dev/null 2>&1; then
+        echo ""
+        echo "===== GLM-OCR server is ready! ====="
+        echo ""
+        break
+      fi
+      # Check if process died
+      if ! kill -0 "$MLX_PID" 2>/dev/null; then
+        echo ""
+        echo "ERROR: GLM-OCR server failed to start. Check $MLX_LOG"
+        echo ""
+        break
+      fi
+      sleep 1
+      TRIES=$((TRIES + 1))
+    done
+
+    if [ $TRIES -eq $MAX_TRIES ]; then
+      echo ""
+      echo "WARNING: GLM-OCR server not ready after 5 minutes."
+      echo "It may still be downloading. Check $MLX_LOG"
+      echo "PDF Workshop will start anyway — GLM-OCR will work once the server is ready."
+      echo ""
+    fi
   else
     echo "GLM-OCR MLX server already running on :8080"
   fi
@@ -73,7 +114,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# Open browser after a short delay
+# Open browser
 if command -v open &>/dev/null; then
   (sleep 2 && open http://localhost:3000) &
 elif command -v xdg-open &>/dev/null; then
@@ -83,6 +124,6 @@ fi
 echo ""
 echo "PDF Workshop — http://localhost:3000"
 echo "GLM-OCR (local) — http://localhost:8080"
-echo "Press Ctrl+C to stop."
+echo "Press Ctrl+C to stop both."
 echo ""
 npm run dev
