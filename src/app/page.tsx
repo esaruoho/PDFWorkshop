@@ -354,10 +354,6 @@ export default function Home() {
         setShowSettings(true);
         return;
       }
-      if (method === "glm-ocr" && !glmOcrKey) {
-        setShowSettings(true);
-        return;
-      }
       setIsOcrRunning(true);
       setOcrProgress(`Running ${method === "glm-ocr" ? "GLM-OCR" : method} on page ${currentPage}...`);
       try {
@@ -383,10 +379,6 @@ export default function Home() {
     async (method: "tesseract" | "gemini" | "glm-ocr", overwrite: boolean = false) => {
       if (!pdfDoc) return;
       if (method === "gemini" && !geminiKey) {
-        setShowSettings(true);
-        return;
-      }
-      if (method === "glm-ocr" && !glmOcrKey) {
         setShowSettings(true);
         return;
       }
@@ -613,22 +605,23 @@ export default function Home() {
               htmlFor="glm-ocr-api-key"
               className="block text-xs text-neutral-400 mb-1"
             >
-              GLM-OCR API Key (Zhipu)
+              GLM-OCR API Key (optional — cloud fallback)
             </label>
             <input
               id="glm-ocr-api-key"
               type="password"
               value={glmOcrKey}
               onChange={(e) => saveGlmOcrKey(e.target.value)}
-              placeholder="Enter your Zhipu API key (sk-...)"
+              placeholder="Not needed if MLX or Ollama is running locally"
               className="w-full px-3 py-2 text-sm bg-neutral-900 border border-neutral-600 rounded focus:outline-none focus:border-indigo-500"
             />
             <p className="text-xs text-neutral-500 mt-1 mb-4">
-              Get a key from{" "}
+              GLM-OCR runs locally via MLX (./start-mlx-server.sh) or Ollama (ollama pull glm-ocr).
+              No API key needed. Cloud fallback: get a key from{" "}
               <span className="text-indigo-400">
                 open.bigmodel.cn
               </span>
-              . #1 on OmniDocBench — best for tables, formulas, complex layouts. Stored in your browser only.
+              .
             </p>
 
             {/* Language selection */}
