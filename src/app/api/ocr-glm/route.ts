@@ -103,32 +103,66 @@ export async function POST(request: NextRequest) {
 
   const base64Data = imageBase64.replace(/^data:image\/\w+;base64,/, "");
 
+  // Quick health check: is the MLX server process alive?
+  let mlxAlive = false;
   try {
-    // 1. Try local MLX server first (no API key needed)
-    const mlxResult = await tryMlx(base64Data);
-    if (mlxResult) {
-      return NextResponse.json({ text: mlxResult, backend: "mlx" });
+    const ping = await fetch("http://localhost:8080/", {
+      signal: AbortSignal.timeout(3000),
+    });
+    mlxAlive = ping.ok || ping.status === 404 || ping.status === 405;
+  } catch {
+    // not reachable
+  }
+
+  let ollamaAlive = false;
+  if (!mlxAlive) {
+    try {
+      const ping = await fetch("http://localhost:11434/", {
+        signal: AbortSignal.timeout(3000),
+      });
+      ollamaAlive = ping.ok || ping.status === 404;
+    } catch {
+      // not reachable
+    }
+  }
+
+  try {
+    // 1. Try local MLX server first
+    if (mlxAlive) {
+      const mlxResult = await tryMlx(base64Data);
+      if (mlxResult) {
+        return NextResponse.json({ text: mlxResult, backend: "mlx" });
+      }
     }
 
-    // 2. Try local Ollama (no API key needed)
-    const ollamaResult = await tryOllama(base64Data);
-    if (ollamaResult) {
-      return NextResponse.json({ text: ollamaResult, backend: "ollama" });
+    // 2. Try local Ollama
+    if (ollamaAlive) {
+      const ollamaResult = await tryOllama(base64Data);
+      if (ollamaResult) {
+        return NextResponse.json({ text: ollamaResult, backend: "ollama" });
+      }
     }
 
     // 3. Fall back to cloud MaaS API (needs API key)
     const apiKey = clientKey || process.env.ZHIPU_API_KEY;
     if (!apiKey) {
-      return NextResponse.json(
-        {
-          error:
-            "No local GLM-OCR server found (MLX or Ollama) and no API key configured.\n\n" +
-            "Option 1: Run ./start-mlx-server.sh (Apple Silicon, local, free)\n" +
-            "Option 2: Run 'ollama pull glm-ocr:latest && ollama serve' (local, free)\n" +
-            "Option 3: Set a Zhipu API key in Settings (cloud, paid)",
-        },
-        { status: 500 }
-      );
+      // Give a specific error based on what we found
+      let errorMsg: string;
+      if (!mlxAlive && !ollamaAlive) {
+        errorMsg =
+          "MLX server is not responding (it may have crashed after processing pages).\n\n" +
+          "Check the terminal where you ran ./start.sh for errors.\n" +
+          "To restart: press R in the terminal, or stop and re-run ./start.sh";
+      } else if (mlxAlive) {
+        errorMsg =
+          "MLX server is running but returned empty results for this page. " +
+          "Try again, or use a different engine (Tesseract or Gemini).";
+      } else {
+        errorMsg =
+          "Ollama is running but returned empty results. " +
+          "Try a different engine.";
+      }
+      return NextResponse.json({ error: errorMsg }, { status: 500 });
     }
 
     const maasResult = await tryMaas(base64Data, apiKey);
