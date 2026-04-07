@@ -374,8 +374,8 @@ export default function Home() {
   };
   const FALLBACK_ORDER: ("tesseract" | "gemini" | "glm-ocr")[] = [
     "glm-ocr",
-    "tesseract",
     "gemini",
+    "tesseract",
   ];
 
   const runOcrWithFallback = useCallback(
