@@ -442,16 +442,17 @@ export default function Home() {
       // --- Sanity check: find pages that look non-blank but got empty OCR ---
       setOcrProgress("Sanity check — scanning for missed pages...");
       const suspiciousPages: number[] = [];
+      // Read latest pages state via callback to avoid stale closure
+      let latestPages: PageData[] = [];
+      setPages((prev) => {
+        latestPages = prev;
+        return prev;
+      });
       for (let i = 1; i <= pdfDoc.numPages; i++) {
-        // Check pages we just processed that ended up empty
-        const pageData = pages[i - 1];
-        const currentText = pageData?.ocrText ?? "";
-        // Skip pages that have text
+        const currentText = latestPages[i - 1]?.ocrText ?? "";
         if (currentText.trim().length > 20) continue;
-        // Check ink coverage
         try {
           const coverage = await getPageInkCoverage(pdfDoc, i);
-          // > 0.5% ink = probably has content that OCR missed
           if (coverage > 0.005) {
             suspiciousPages.push(i);
           }
@@ -464,20 +465,89 @@ export default function Home() {
       setOcrProgress("");
       setLastModifiedAt(Date.now());
 
-      // Report results
-      const messages: string[] = [];
+      // Report failures
       if (failedPages.length > 0) {
-        messages.push(
+        alert(
           `OCR failed on ${failedPages.length} page${failedPages.length > 1 ? "s" : ""}: ${failedPages.join(", ")}`
         );
       }
+
+      // Offer retry for suspicious pages
       if (suspiciousPages.length > 0) {
-        messages.push(
-          `${suspiciousPages.length} page${suspiciousPages.length > 1 ? "s have" : " has"} visible content but empty/short OCR text: ${suspiciousPages.join(", ")}.\n\nTry re-OCR'ing these pages individually, or with a different engine.`
+        const retryEngines = ["tesseract", "gemini", "glm-ocr"].filter(
+          (e) => e !== method
         );
-      }
-      if (messages.length > 0) {
-        alert(messages.join("\n\n"));
+        const engineLabels: Record<string, string> = {
+          tesseract: "Tesseract",
+          gemini: "Gemini Vision",
+          "glm-ocr": "GLM-OCR",
+        };
+        const retryList = retryEngines
+          .map((e, i) => `${i + 1}. ${engineLabels[e]}`)
+          .join("\n");
+        const choice = prompt(
+          `${suspiciousPages.length} page${suspiciousPages.length > 1 ? "s have" : " has"} visible content but empty/short OCR text:\nPages: ${suspiciousPages.join(", ")}\n\nRetry these pages with a different engine?\n${retryList}\n\nEnter number (or cancel to skip):`,
+        );
+        if (choice) {
+          const idx = parseInt(choice, 10) - 1;
+          if (idx >= 0 && idx < retryEngines.length) {
+            const retryMethod = retryEngines[idx] as "tesseract" | "gemini" | "glm-ocr";
+            // Run retry on just the suspicious pages
+            setIsOcrRunning(true);
+            const retryFn =
+              retryMethod === "tesseract"
+                ? runTesseract
+                : retryMethod === "gemini"
+                  ? runGemini
+                  : runGlmOcr;
+            let retrySuccess = 0;
+            const retryFailed: number[] = [];
+            for (let j = 0; j < suspiciousPages.length; j++) {
+              const pageNum = suspiciousPages[j];
+              setOcrProgress(
+                `Retry (${engineLabels[retryMethod]}) — ${j + 1}/${suspiciousPages.length}...`
+              );
+              try {
+                const text = await retryFn(pageNum);
+                if (text && text.trim().length > 0) {
+                  setPages((prev) => {
+                    const next = [...prev];
+                    const page = { ...next[pageNum - 1] };
+                    if (page.ocrText) {
+                      page.history = [
+                        ...page.history,
+                        {
+                          text: page.ocrText,
+                          source: page.source ?? "manual",
+                          timestamp: Date.now(),
+                        },
+                      ];
+                    }
+                    page.ocrText = text;
+                    page.source = retryMethod;
+                    next[pageNum - 1] = page;
+                    return next;
+                  });
+                  retrySuccess++;
+                } else {
+                  retryFailed.push(pageNum);
+                }
+              } catch {
+                retryFailed.push(pageNum);
+              }
+            }
+            setIsOcrRunning(false);
+            setOcrProgress("");
+            setLastModifiedAt(Date.now());
+            const retryMsg = [`Retry complete: ${retrySuccess} page${retrySuccess !== 1 ? "s" : ""} recovered.`];
+            if (retryFailed.length > 0) {
+              retryMsg.push(
+                `Still empty: pages ${retryFailed.join(", ")}. Try a different engine or edit manually.`
+              );
+            }
+            alert(retryMsg.join("\n"));
+          }
+        }
       }
     },
     [pdfDoc, runTesseract, runGemini, runGlmOcr, geminiKey, glmOcrKey, pages]
