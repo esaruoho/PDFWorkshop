@@ -52,11 +52,20 @@ export default function PdfViewer({
         <span className="text-sm font-medium text-neutral-300">
           Original Scan
         </span>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-1.5">
+          <button
+            onClick={() => onPageChange(1)}
+            disabled={currentPage <= 1}
+            className="px-1.5 py-1 text-xs rounded bg-neutral-700 hover:bg-neutral-600 disabled:opacity-30 disabled:cursor-not-allowed"
+            title="First page"
+          >
+            First
+          </button>
           <button
             onClick={() => onPageChange(Math.max(1, currentPage - 1))}
             disabled={currentPage <= 1}
             className="px-2 py-1 text-xs rounded bg-neutral-700 hover:bg-neutral-600 disabled:opacity-30 disabled:cursor-not-allowed"
+            title="Previous page"
           >
             Prev
           </button>
@@ -67,8 +76,17 @@ export default function PdfViewer({
             onClick={() => onPageChange(Math.min(totalPages, currentPage + 1))}
             disabled={currentPage >= totalPages}
             className="px-2 py-1 text-xs rounded bg-neutral-700 hover:bg-neutral-600 disabled:opacity-30 disabled:cursor-not-allowed"
+            title="Next page"
           >
             Next
+          </button>
+          <button
+            onClick={() => onPageChange(totalPages)}
+            disabled={currentPage >= totalPages}
+            className="px-1.5 py-1 text-xs rounded bg-neutral-700 hover:bg-neutral-600 disabled:opacity-30 disabled:cursor-not-allowed"
+            title="Last page"
+          >
+            Last
           </button>
         </div>
       </div>
