@@ -164,7 +164,7 @@ echo "PDF Workshop — http://localhost:3000"
 if [ "$IS_APPLE_SILICON" = "true" ]; then
   echo "GLM-OCR (local) — http://localhost:8080 (auto-restarts on crash)"
 fi
-echo "Press R to restart servers, Ctrl+C to stop."
+echo "Press R to restart servers, Q to quit."
 echo ""
 
 start_next
@@ -172,7 +172,11 @@ start_next
 # Listen for 'r' or 'R' to restart everything
 while true; do
   read -rsn1 key
-  if [[ "$key" == "r" || "$key" == "R" ]]; then
+  if [[ "$key" == "q" || "$key" == "Q" ]]; then
+    echo ""
+    echo "Quitting..."
+    exit 0
+  elif [[ "$key" == "r" || "$key" == "R" ]]; then
     echo ""
     echo "===== Restarting... ====="
     # Restart Next.js
