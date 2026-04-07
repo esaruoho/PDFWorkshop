@@ -332,24 +332,36 @@ export default function Home() {
     [pdfDoc, geminiKey, ocrLanguages]
   );
 
-  // --- GLM-OCR ---
+  // --- GLM-OCR (with auto-retry if server crashed and watchdog restarts it) ---
   const runGlmOcr = useCallback(
     async (pageNum: number) => {
       if (!pdfDoc) return;
       const imageData = await getPageAsImageData(pdfDoc, pageNum);
-      const res = await fetch("/api/ocr-glm", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          imageBase64: imageData,
-          apiKey: glmOcrKey,
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok || data.error) {
-        throw new Error(data.error || `GLM-OCR API request failed: ${res.status}`);
+      const maxAttempts = 2;
+      for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        try {
+          const res = await fetch("/api/ocr-glm", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              imageBase64: imageData,
+              apiKey: glmOcrKey,
+            }),
+          });
+          const data = await res.json();
+          if (!res.ok || data.error) {
+            throw new Error(data.error || `GLM-OCR failed: ${res.status}`);
+          }
+          return data.text as string;
+        } catch (err) {
+          if (attempt < maxAttempts) {
+            // Wait for watchdog to restart the MLX server
+            await new Promise((r) => setTimeout(r, 8000));
+            continue;
+          }
+          throw err;
+        }
       }
-      return data.text as string;
     },
     [pdfDoc, glmOcrKey]
   );
