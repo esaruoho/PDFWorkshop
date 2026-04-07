@@ -366,6 +366,60 @@ export default function Home() {
     [pdfDoc, glmOcrKey]
   );
 
+  // --- Run OCR on a page with automatic engine fallback ---
+  const ENGINE_LABELS: Record<string, string> = {
+    tesseract: "Tesseract",
+    gemini: "Gemini",
+    "glm-ocr": "GLM-OCR",
+  };
+  const FALLBACK_ORDER: ("tesseract" | "gemini" | "glm-ocr")[] = [
+    "glm-ocr",
+    "tesseract",
+    "gemini",
+  ];
+
+  const runOcrWithFallback = useCallback(
+    async (
+      pageNum: number,
+      preferredMethod: "tesseract" | "gemini" | "glm-ocr",
+      onProgress?: (msg: string) => void
+    ): Promise<{ text: string; usedMethod: "tesseract" | "gemini" | "glm-ocr" } | null> => {
+      // Build engine order: preferred first, then the rest
+      const engines = [
+        preferredMethod,
+        ...FALLBACK_ORDER.filter((e) => e !== preferredMethod),
+      ];
+
+      for (const engine of engines) {
+        // Skip Gemini if no key
+        if (engine === "gemini" && !geminiKey) continue;
+
+        const label = ENGINE_LABELS[engine];
+        onProgress?.(`${label} on page ${pageNum}...`);
+
+        try {
+          const ocrFn =
+            engine === "tesseract"
+              ? runTesseract
+              : engine === "gemini"
+                ? runGemini
+                : runGlmOcr;
+          const text = await ocrFn(pageNum);
+          if (text && text.trim().length > 0) {
+            return { text, usedMethod: engine };
+          }
+          // Empty result — try next engine
+          console.log(`${label} returned empty for page ${pageNum}, trying next engine...`);
+        } catch (err) {
+          console.warn(`${label} failed on page ${pageNum}:`, err);
+          // Try next engine
+        }
+      }
+      return null;
+    },
+    [runTesseract, runGemini, runGlmOcr, geminiKey]
+  );
+
   // --- OCR single page ---
   const handleOcrPage = useCallback(
     async (method: "tesseract" | "gemini" | "glm-ocr") => {
@@ -374,22 +428,31 @@ export default function Home() {
         setShowSettings(true);
         return;
       }
-      if (method === "glm-ocr" && !glmOcrKey) {
-        // GLM-OCR tries local servers first, only needs key for cloud fallback
-        // Don't block — let it try MLX/Ollama
-      }
-      const methodLabel =
-        method === "glm-ocr" ? "GLM-OCR" : method === "gemini" ? "Gemini" : "Tesseract";
       setIsOcrRunning(true);
-      setOcrProgress(`Running ${methodLabel} on page ${currentPage}...`);
+      setOcrProgress(`Running ${ENGINE_LABELS[method]} on page ${currentPage}...`);
       try {
-        const text =
-          method === "tesseract"
-            ? await runTesseract(currentPage)
-            : method === "gemini"
-              ? await runGemini(currentPage)
-              : await runGlmOcr(currentPage);
-        if (text) updatePageText(text, method);
+        const result = await runOcrWithFallback(currentPage, method, setOcrProgress);
+        if (result) {
+          updatePageText(result.text, result.usedMethod);
+          if (result.usedMethod !== method) {
+            // Let the user know a different engine was used
+            setRetryResult(null);
+            setOcrResult({
+              failedPages: [],
+              suspiciousPages: [],
+              originalMethod: `${ENGINE_LABELS[method]} failed, used ${ENGINE_LABELS[result.usedMethod]} instead`,
+              totalProcessed: 1,
+            });
+          }
+        } else {
+          setRetryResult(null);
+          setOcrResult({
+            failedPages: [currentPage],
+            suspiciousPages: [],
+            originalMethod: method,
+            totalProcessed: 0,
+          });
+        }
       } catch (err) {
         setRetryResult(null);
         setOcrResult({
@@ -398,7 +461,7 @@ export default function Home() {
           originalMethod: method,
           totalProcessed: 0,
         });
-        console.error(`OCR error on page ${currentPage}:`, err);
+        console.error(`All OCR engines failed on page ${currentPage}:`, err);
       } finally {
         setIsOcrRunning(false);
         setOcrProgress("");
@@ -433,7 +496,6 @@ export default function Home() {
       }
 
       setIsOcrRunning(true);
-      const ocrFn = method === "tesseract" ? runTesseract : method === "gemini" ? runGemini : runGlmOcr;
       let processed = 0;
       const target = overwrite ? pdfDoc.numPages : emptyCount;
       const failedPages: number[] = [];
@@ -442,11 +504,11 @@ export default function Home() {
         if (!overwrite && pages[i - 1]?.ocrText) continue;
 
         processed++;
-        const methodLabel = method === "glm-ocr" ? "GLM-OCR" : method === "gemini" ? "Gemini" : "Tesseract";
-        setOcrProgress(`${methodLabel} — ${processed}/${target} pages...`);
         try {
-          const text = await ocrFn(i);
-          if (text) {
+          const result = await runOcrWithFallback(i, method, (msg) =>
+            setOcrProgress(`${processed}/${target} — ${msg}`)
+          );
+          if (result) {
             setPages((prev) => {
               const next = [...prev];
               const page = { ...next[i - 1] };
@@ -460,14 +522,16 @@ export default function Home() {
                   },
                 ];
               }
-              page.ocrText = text;
-              page.source = method;
+              page.ocrText = result.text;
+              page.source = result.usedMethod;
               next[i - 1] = page;
               return next;
             });
+          } else {
+            failedPages.push(i);
           }
         } catch (err) {
-          console.error(`OCR failed on page ${i}:`, err);
+          console.error(`All engines failed on page ${i}:`, err);
           failedPages.push(i);
         }
       }

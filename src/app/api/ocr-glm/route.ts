@@ -114,16 +114,15 @@ export async function POST(request: NextRequest) {
     // not reachable
   }
 
+  // Also check Ollama regardless of MLX status (fallback chain)
   let ollamaAlive = false;
-  if (!mlxAlive) {
-    try {
-      const ping = await fetch("http://localhost:11434/", {
-        signal: AbortSignal.timeout(3000),
-      });
-      ollamaAlive = ping.ok || ping.status === 404;
-    } catch {
-      // not reachable
-    }
+  try {
+    const ping = await fetch("http://localhost:11434/", {
+      signal: AbortSignal.timeout(3000),
+    });
+    ollamaAlive = ping.ok || ping.status === 404;
+  } catch {
+    // not reachable
   }
 
   try {
@@ -133,9 +132,10 @@ export async function POST(request: NextRequest) {
       if (mlxResult) {
         return NextResponse.json({ text: mlxResult, backend: "mlx" });
       }
+      // MLX returned empty — fall through to Ollama/cloud
     }
 
-    // 2. Try local Ollama
+    // 2. Try local Ollama (even if MLX was alive but returned empty)
     if (ollamaAlive) {
       const ollamaResult = await tryOllama(base64Data);
       if (ollamaResult) {
@@ -145,25 +145,33 @@ export async function POST(request: NextRequest) {
 
     // 3. Fall back to cloud MaaS API (needs API key)
     const apiKey = clientKey || process.env.ZHIPU_API_KEY;
-    if (!apiKey) {
-      // Give a specific error based on what we found
-      let errorMsg: string;
-      if (!mlxAlive && !ollamaAlive) {
-        errorMsg =
-          "MLX server is not responding (it may have crashed after processing pages).\n\n" +
-          "Check the terminal where you ran ./start.sh for errors.\n" +
-          "To restart: press R in the terminal, or stop and re-run ./start.sh";
-      } else if (mlxAlive) {
-        errorMsg =
-          "MLX server is running but returned empty results for this page. " +
-          "Try again, or use a different engine (Tesseract or Gemini).";
-      } else {
-        errorMsg =
-          "Ollama is running but returned empty results. " +
-          "Try a different engine.";
+    if (apiKey) {
+      const maasResult = await tryMaas(base64Data, apiKey);
+      if (maasResult) {
+        return NextResponse.json({ text: maasResult, backend: "cloud" });
       }
-      return NextResponse.json({ error: errorMsg }, { status: 500 });
     }
+
+    // All backends tried — return empty text (not an error) so the
+    // sanity check catches it and the user can retry with another engine
+    if (mlxAlive || ollamaAlive) {
+      return NextResponse.json({
+        text: "",
+        backend: mlxAlive ? "mlx" : "ollama",
+        warning: "OCR returned empty for this page. The page may be too complex for this engine.",
+      });
+    }
+
+    // Nothing is running at all
+    return NextResponse.json(
+      {
+        error:
+          "MLX server is not responding (it may have crashed).\n\n" +
+          "Check the terminal where you ran ./start.sh for errors.\n" +
+          "Press R in the terminal to restart.",
+      },
+      { status: 500 }
+    );
 
     const maasResult = await tryMaas(base64Data, apiKey);
     if (maasResult) {
