@@ -23,6 +23,7 @@
 # misc
 .DS_Store
 *.pem
+.venv-mlx/
 
 # debug
 npm-debug.log*
@@ -30,8 +31,12 @@ yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
 
-# env files (can opt-in for committing if needed)
+# env files — API keys live here, NEVER commit
 .env*
+
+# batch OCR output
+*_ocr.pdf
+*.pdfws
 
 # vercel
 .vercel

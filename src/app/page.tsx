@@ -51,6 +51,7 @@ export default function Home() {
   const [isOcrRunning, setIsOcrRunning] = useState(false);
   const [ocrProgress, setOcrProgress] = useState("");
   const [showSettings, setShowSettings] = useState(false);
+  const pendingOcrAction = useRef<{ type: "page" | "all"; method: "gemini" | "glm-ocr"; overwrite?: boolean } | null>(null);
   const [geminiKey, setGeminiKey] = useState("");
   const [glmOcrKey, setGlmOcrKey] = useState("");
   const [isDragging, setIsDragging] = useState(false);
@@ -351,6 +352,7 @@ export default function Home() {
   const handleOcrPage = useCallback(
     async (method: "tesseract" | "gemini" | "glm-ocr") => {
       if (method === "gemini" && !geminiKey) {
+        pendingOcrAction.current = { type: "page", method };
         setShowSettings(true);
         return;
       }
@@ -379,6 +381,7 @@ export default function Home() {
     async (method: "tesseract" | "gemini" | "glm-ocr", overwrite: boolean = false) => {
       if (!pdfDoc) return;
       if (method === "gemini" && !geminiKey) {
+        pendingOcrAction.current = { type: "all", method, overwrite };
         setShowSettings(true);
         return;
       }
@@ -487,10 +490,25 @@ export default function Home() {
   // --- Export OCR PDF ---
   const handleExport = useCallback(async () => {
     if (!pdfData) return;
-    const { PDFDocument, rgb, StandardFonts } = await import("pdf-lib");
+    const { PDFDocument, rgb } = await import("pdf-lib");
+    const fontkit = (await import("@pdf-lib/fontkit")).default;
     const srcDoc = await PDFDocument.load(pdfData);
     const exportDoc = await PDFDocument.create();
-    const font = await exportDoc.embedFont(StandardFonts.Helvetica);
+    exportDoc.registerFontkit(fontkit);
+
+    // Fetch a Unicode-capable font (Noto Sans supports Latin, Greek, Cyrillic, etc.)
+    let font: Awaited<ReturnType<typeof exportDoc.embedFont>>;
+    try {
+      const fontUrl =
+        "https://cdn.jsdelivr.net/gh/notofonts/notofonts.github.io/fonts/NotoSans/hinted/ttf/NotoSans-Regular.ttf";
+      const fontRes = await fetch(fontUrl);
+      const fontBytes = await fontRes.arrayBuffer();
+      font = await exportDoc.embedFont(fontBytes, { subset: true });
+    } catch {
+      // Fallback: use Helvetica but strip non-WinAnsi characters
+      const { StandardFonts } = await import("pdf-lib");
+      font = await exportDoc.embedFont(StandardFonts.Helvetica);
+    }
 
     for (let i = 0; i < srcDoc.getPageCount(); i++) {
       const [copiedPage] = await exportDoc.copyPages(srcDoc, [i]);
@@ -505,7 +523,25 @@ export default function Home() {
         for (const line of lines) {
           if (y < 10) break;
           if (line.trim().startsWith("[IMAGE")) continue;
-          page.drawText(line, {
+          // Filter out characters the font cannot encode
+          let safeLine = line;
+          try {
+            font.encodeText(line);
+          } catch {
+            safeLine = line
+              .split("")
+              .filter((ch) => {
+                try {
+                  font.encodeText(ch);
+                  return true;
+                } catch {
+                  return false;
+                }
+              })
+              .join("");
+          }
+          if (!safeLine) continue;
+          page.drawText(safeLine, {
             x: 10,
             y,
             size: fontSize,
@@ -666,7 +702,21 @@ export default function Home() {
 
             <div className="flex justify-end">
               <button
-                onClick={() => setShowSettings(false)}
+                onClick={() => {
+                  setShowSettings(false);
+                  const pending = pendingOcrAction.current;
+                  if (pending) {
+                    pendingOcrAction.current = null;
+                    const keyReady = pending.method === "gemini" ? geminiKey : glmOcrKey;
+                    if (keyReady) {
+                      if (pending.type === "page") {
+                        handleOcrPage(pending.method);
+                      } else {
+                        handleOcrAll(pending.method, pending.overwrite);
+                      }
+                    }
+                  }
+                }}
                 className="px-4 py-2 text-xs rounded bg-indigo-600 hover:bg-indigo-500 font-medium"
               >
                 Done

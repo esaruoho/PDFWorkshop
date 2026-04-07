@@ -33,7 +33,7 @@ export async function POST(request: NextRequest) {
           data: base64Data,
         },
       },
-      `Extract ALL text from this scanned document page.${
+      `Extract all text from this scanned document page. The page may have multiple columns — read all columns from left to right, extracting each column fully top to bottom. Do not skip any text in any area of the page.${
         languages && languages.length > 0
           ? ` The document is in ${languages.join(" and ")}.`
           : ""

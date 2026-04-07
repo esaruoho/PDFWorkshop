@@ -124,6 +124,42 @@ fi
 echo ""
 echo "PDF Workshop — http://localhost:3000"
 echo "GLM-OCR (local) — http://localhost:8080"
-echo "Press Ctrl+C to stop both."
+echo "Press R to restart, Ctrl+C to stop."
 echo ""
-npm run dev
+
+# Run Next.js dev server in background so we can listen for keypress
+start_next() {
+  npm run dev &
+  NEXT_PID=$!
+}
+
+# Update cleanup to also kill Next.js
+cleanup() {
+  if [ -n "$NEXT_PID" ]; then
+    kill "$NEXT_PID" 2>/dev/null
+    wait "$NEXT_PID" 2>/dev/null
+  fi
+  if [ -n "$MLX_PID" ]; then
+    echo ""
+    echo "Stopping GLM-OCR MLX server..."
+    kill "$MLX_PID" 2>/dev/null
+    wait "$MLX_PID" 2>/dev/null
+  fi
+}
+trap cleanup EXIT
+
+start_next
+
+# Listen for 'r' or 'R' keypress to restart Next.js
+while true; do
+  read -rsn1 key
+  if [[ "$key" == "r" || "$key" == "R" ]]; then
+    echo ""
+    echo "===== Restarting Next.js dev server ====="
+    kill "$NEXT_PID" 2>/dev/null
+    wait "$NEXT_PID" 2>/dev/null
+    start_next
+    echo "===== Restarted ====="
+    echo ""
+  fi
+done

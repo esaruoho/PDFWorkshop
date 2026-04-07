@@ -1,0 +1,7 @@
+#!/bin/bash
+# OCR a single PDF or all PDFs in a folder.
+# Usage: ./ocr file.pdf
+#        ./ocr /path/to/folder
+#        ./ocr file.pdf --output /path/to/results
+cd "$(dirname "$0")"
+node batch-ocr.mjs "$@"
