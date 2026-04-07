@@ -36,14 +36,62 @@ if [ ! -d node_modules ]; then
   npm install
 fi
 
-# --- MLX server management (Apple Silicon only) ---
-MLX_PID=""
-MLX_LOG="/tmp/glm-ocr-mlx.log"
+# Clear stale cache
+rm -rf .next
+
+# --- Platform detection ---
 IS_APPLE_SILICON=false
 if [[ "$(uname -m)" == "arm64" && "$(uname)" == "Darwin" ]]; then
   IS_APPLE_SILICON=true
 fi
 
+# --- Process tracking ---
+NEXT_PID=""
+MLX_PID=""
+WATCHDOG_PID=""
+MLX_LOG="/tmp/glm-ocr-mlx.log"
+
+cleanup() {
+  [ -n "$WATCHDOG_PID" ] && kill "$WATCHDOG_PID" 2>/dev/null
+  [ -n "$NEXT_PID" ] && kill "$NEXT_PID" 2>/dev/null && wait "$NEXT_PID" 2>/dev/null
+  if [ -n "$MLX_PID" ]; then
+    echo ""
+    echo "Stopping GLM-OCR MLX server..."
+    kill "$MLX_PID" 2>/dev/null
+    wait "$MLX_PID" 2>/dev/null
+  fi
+}
+trap cleanup EXIT
+
+# ==========================================
+# 1. Start Next.js FIRST
+# ==========================================
+echo ""
+echo "Starting Next.js..."
+npm run dev &
+NEXT_PID=$!
+
+# Wait for Next.js to be ready
+TRIES=0
+while [ $TRIES -lt 30 ]; do
+  if curl -s http://localhost:3000 >/dev/null 2>&1; then
+    echo "Next.js is ready at http://localhost:3000"
+    break
+  fi
+  sleep 1
+  TRIES=$((TRIES + 1))
+done
+
+# 2. Open browser now that Next.js is up
+if command -v open &>/dev/null; then
+  open http://localhost:3000
+elif command -v xdg-open &>/dev/null; then
+  xdg-open http://localhost:3000
+fi
+
+# ==========================================
+# 3. Start GLM-OCR MLX in background (Apple Silicon only)
+# ==========================================
 start_mlx() {
   if [ "$IS_APPLE_SILICON" != "true" ]; then return; fi
 
@@ -84,7 +132,6 @@ start_mlx() {
     fi
     if ! kill -0 "$MLX_PID" 2>/dev/null; then
       echo "ERROR: GLM-OCR server failed to start. Check $MLX_LOG"
-      echo ""
       MLX_PID=""
       return
     fi
@@ -92,27 +139,23 @@ start_mlx() {
     tries=$((tries + 1))
   done
   echo "WARNING: GLM-OCR server not ready after 5 minutes. Check $MLX_LOG"
-  echo ""
 }
 
-# Auto-restart MLX if it crashes (runs in background)
+# Auto-restart MLX on crash
 mlx_watchdog() {
   if [ "$IS_APPLE_SILICON" != "true" ]; then return; fi
   while true; do
     sleep 5
-    # If we had a PID and it died, restart
     if [ -n "$MLX_PID" ] && ! kill -0 "$MLX_PID" 2>/dev/null; then
       echo ""
       echo "===== GLM-OCR server crashed — auto-restarting... ====="
-      echo ""
       sleep 2
       .venv-mlx/bin/python -m mlx_vlm.server --trust-remote-code --port 8080 > "$MLX_LOG" 2>&1 &
       MLX_PID=$!
-      # Wait for it to come back
       local tries=0
       while [ $tries -lt 120 ]; do
         if curl -s http://localhost:8080/ >/dev/null 2>&1; then
-          echo "===== GLM-OCR server restarted successfully ====="
+          echo "===== GLM-OCR server restarted ====="
           echo ""
           break
         fi
@@ -132,44 +175,20 @@ start_mlx
 mlx_watchdog &
 WATCHDOG_PID=$!
 
-# --- Next.js ---
-NEXT_PID=""
-start_next() {
-  npm run dev &
-  NEXT_PID=$!
-}
-
-# Cleanup on exit
-cleanup() {
-  [ -n "$WATCHDOG_PID" ] && kill "$WATCHDOG_PID" 2>/dev/null
-  [ -n "$NEXT_PID" ] && kill "$NEXT_PID" 2>/dev/null && wait "$NEXT_PID" 2>/dev/null
-  if [ -n "$MLX_PID" ]; then
-    echo ""
-    echo "Stopping GLM-OCR MLX server..."
-    kill "$MLX_PID" 2>/dev/null
-    wait "$MLX_PID" 2>/dev/null
-  fi
-}
-trap cleanup EXIT
-
-# Open browser
-if command -v open &>/dev/null; then
-  (sleep 2 && open http://localhost:3000) &
-elif command -v xdg-open &>/dev/null; then
-  (sleep 2 && xdg-open http://localhost:3000) &
-fi
-
+# ==========================================
+# Status
+# ==========================================
 echo ""
 echo "PDF Workshop — http://localhost:3000"
 if [ "$IS_APPLE_SILICON" = "true" ]; then
   echo "GLM-OCR (local) — http://localhost:8080 (auto-restarts on crash)"
 fi
-echo "Press R to restart servers, Q to quit."
+echo "Press R to restart, Q to quit."
 echo ""
 
-start_next
-
-# Listen for 'r' or 'R' to restart everything
+# ==========================================
+# Keyboard listener
+# ==========================================
 while true; do
   read -rsn1 key
   if [[ "$key" == "q" || "$key" == "Q" ]]; then
@@ -179,10 +198,12 @@ while true; do
   elif [[ "$key" == "r" || "$key" == "R" ]]; then
     echo ""
     echo "===== Restarting... ====="
-    # Restart Next.js
+    # Kill Next.js
     kill "$NEXT_PID" 2>/dev/null
     wait "$NEXT_PID" 2>/dev/null
-    # Restart MLX if on Apple Silicon
+    # Clear cache
+    rm -rf .next
+    # Restart MLX if needed
     if [ "$IS_APPLE_SILICON" = "true" ] && [ -n "$MLX_PID" ]; then
       kill "$MLX_PID" 2>/dev/null
       wait "$MLX_PID" 2>/dev/null
@@ -200,7 +221,9 @@ while true; do
         local_tries=$((local_tries + 1))
       done
     fi
-    start_next
+    # Restart Next.js
+    npm run dev &
+    NEXT_PID=$!
     echo "===== Restarted ====="
     echo ""
   fi
