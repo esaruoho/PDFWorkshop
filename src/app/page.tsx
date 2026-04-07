@@ -13,6 +13,10 @@ import { loadPdfDocument, getPageAsImageData, getPageInkCoverage } from "@/lib/p
 import { cleanupText, type CleanupOptions } from "@/lib/text-cleanup";
 import PdfViewer from "@/components/PdfViewer";
 import OcrEditor from "@/components/OcrEditor";
+import OcrResultBanner, {
+  type OcrResult,
+  type RetryResult,
+} from "@/components/OcrResultBanner";
 
 function initPages(count: number): PageData[] {
   return Array.from({ length: count }, (_, i) => ({
@@ -60,6 +64,9 @@ export default function Home() {
   ]);
   const [lastSavedAt, setLastSavedAt] = useState<number | null>(null);
   const [lastModifiedAt, setLastModifiedAt] = useState<number | null>(null);
+  const [ocrResult, setOcrResult] = useState<OcrResult | null>(null);
+  const [retryResult, setRetryResult] = useState<RetryResult | null>(null);
+  const [isRetrying, setIsRetrying] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Load settings from localStorage on mount
@@ -355,8 +362,14 @@ export default function Home() {
         setShowSettings(true);
         return;
       }
+      if (method === "glm-ocr" && !glmOcrKey) {
+        // GLM-OCR tries local servers first, only needs key for cloud fallback
+        // Don't block — let it try MLX/Ollama
+      }
+      const methodLabel =
+        method === "glm-ocr" ? "GLM-OCR" : method === "gemini" ? "Gemini" : "Tesseract";
       setIsOcrRunning(true);
-      setOcrProgress(`Running ${method === "glm-ocr" ? "GLM-OCR" : method} on page ${currentPage}...`);
+      setOcrProgress(`Running ${methodLabel} on page ${currentPage}...`);
       try {
         const text =
           method === "tesseract"
@@ -366,7 +379,14 @@ export default function Home() {
               : await runGlmOcr(currentPage);
         if (text) updatePageText(text, method);
       } catch (err) {
-        alert(`OCR error: ${err instanceof Error ? err.message : err}`);
+        setRetryResult(null);
+        setOcrResult({
+          failedPages: [currentPage],
+          suspiciousPages: [],
+          originalMethod: method,
+          totalProcessed: 0,
+        });
+        console.error(`OCR error on page ${currentPage}:`, err);
       } finally {
         setIsOcrRunning(false);
         setOcrProgress("");
@@ -410,7 +430,7 @@ export default function Home() {
         if (!overwrite && pages[i - 1]?.ocrText) continue;
 
         processed++;
-        const methodLabel = method === "glm-ocr" ? "GLM-OCR" : method;
+        const methodLabel = method === "glm-ocr" ? "GLM-OCR" : method === "gemini" ? "Gemini" : "Tesseract";
         setOcrProgress(`${methodLabel} — ${processed}/${target} pages...`);
         try {
           const text = await ocrFn(i);
@@ -442,7 +462,6 @@ export default function Home() {
       // --- Sanity check: find pages that look non-blank but got empty OCR ---
       setOcrProgress("Sanity check — scanning for missed pages...");
       const suspiciousPages: number[] = [];
-      // Read latest pages state via callback to avoid stale closure
       let latestPages: PageData[] = [];
       setPages((prev) => {
         latestPages = prev;
@@ -457,100 +476,89 @@ export default function Home() {
             suspiciousPages.push(i);
           }
         } catch {
-          // skip coverage check failures
+          // skip
         }
       }
 
       setIsOcrRunning(false);
       setOcrProgress("");
       setLastModifiedAt(Date.now());
-
-      // Report failures
-      if (failedPages.length > 0) {
-        alert(
-          `OCR failed on ${failedPages.length} page${failedPages.length > 1 ? "s" : ""}: ${failedPages.join(", ")}`
-        );
-      }
-
-      // Offer retry for suspicious pages
-      if (suspiciousPages.length > 0) {
-        const retryEngines = ["tesseract", "gemini", "glm-ocr"].filter(
-          (e) => e !== method
-        );
-        const engineLabels: Record<string, string> = {
-          tesseract: "Tesseract",
-          gemini: "Gemini Vision",
-          "glm-ocr": "GLM-OCR",
-        };
-        const retryList = retryEngines
-          .map((e, i) => `${i + 1}. ${engineLabels[e]}`)
-          .join("\n");
-        const choice = prompt(
-          `${suspiciousPages.length} page${suspiciousPages.length > 1 ? "s have" : " has"} visible content but empty/short OCR text:\nPages: ${suspiciousPages.join(", ")}\n\nRetry these pages with a different engine?\n${retryList}\n\nEnter number (or cancel to skip):`,
-        );
-        if (choice) {
-          const idx = parseInt(choice, 10) - 1;
-          if (idx >= 0 && idx < retryEngines.length) {
-            const retryMethod = retryEngines[idx] as "tesseract" | "gemini" | "glm-ocr";
-            // Run retry on just the suspicious pages
-            setIsOcrRunning(true);
-            const retryFn =
-              retryMethod === "tesseract"
-                ? runTesseract
-                : retryMethod === "gemini"
-                  ? runGemini
-                  : runGlmOcr;
-            let retrySuccess = 0;
-            const retryFailed: number[] = [];
-            for (let j = 0; j < suspiciousPages.length; j++) {
-              const pageNum = suspiciousPages[j];
-              setOcrProgress(
-                `Retry (${engineLabels[retryMethod]}) — ${j + 1}/${suspiciousPages.length}...`
-              );
-              try {
-                const text = await retryFn(pageNum);
-                if (text && text.trim().length > 0) {
-                  setPages((prev) => {
-                    const next = [...prev];
-                    const page = { ...next[pageNum - 1] };
-                    if (page.ocrText) {
-                      page.history = [
-                        ...page.history,
-                        {
-                          text: page.ocrText,
-                          source: page.source ?? "manual",
-                          timestamp: Date.now(),
-                        },
-                      ];
-                    }
-                    page.ocrText = text;
-                    page.source = retryMethod;
-                    next[pageNum - 1] = page;
-                    return next;
-                  });
-                  retrySuccess++;
-                } else {
-                  retryFailed.push(pageNum);
-                }
-              } catch {
-                retryFailed.push(pageNum);
-              }
-            }
-            setIsOcrRunning(false);
-            setOcrProgress("");
-            setLastModifiedAt(Date.now());
-            const retryMsg = [`Retry complete: ${retrySuccess} page${retrySuccess !== 1 ? "s" : ""} recovered.`];
-            if (retryFailed.length > 0) {
-              retryMsg.push(
-                `Still empty: pages ${retryFailed.join(", ")}. Try a different engine or edit manually.`
-              );
-            }
-            alert(retryMsg.join("\n"));
-          }
-        }
-      }
+      setRetryResult(null);
+      setOcrResult({
+        failedPages,
+        suspiciousPages,
+        originalMethod: method,
+        totalProcessed: processed,
+      });
     },
     [pdfDoc, runTesseract, runGemini, runGlmOcr, geminiKey, glmOcrKey, pages]
+  );
+
+  // --- Retry suspicious pages with a different engine ---
+  const handleRetry = useCallback(
+    async (retryMethod: "tesseract" | "gemini" | "glm-ocr") => {
+      if (!pdfDoc || !ocrResult) return;
+      const pagesToRetry = ocrResult.suspiciousPages;
+      if (pagesToRetry.length === 0) return;
+
+      setIsRetrying(true);
+      setIsOcrRunning(true);
+      const retryFn =
+        retryMethod === "tesseract"
+          ? runTesseract
+          : retryMethod === "gemini"
+            ? runGemini
+            : runGlmOcr;
+      const engineLabels: Record<string, string> = {
+        tesseract: "Tesseract",
+        gemini: "Gemini Vision",
+        "glm-ocr": "GLM-OCR",
+      };
+      let recovered = 0;
+      const stillEmpty: number[] = [];
+
+      for (let j = 0; j < pagesToRetry.length; j++) {
+        const pageNum = pagesToRetry[j];
+        setOcrProgress(
+          `Retry (${engineLabels[retryMethod]}) — ${j + 1}/${pagesToRetry.length}...`
+        );
+        try {
+          const text = await retryFn(pageNum);
+          if (text && text.trim().length > 0) {
+            setPages((prev) => {
+              const next = [...prev];
+              const page = { ...next[pageNum - 1] };
+              if (page.ocrText) {
+                page.history = [
+                  ...page.history,
+                  {
+                    text: page.ocrText,
+                    source: page.source ?? "manual",
+                    timestamp: Date.now(),
+                  },
+                ];
+              }
+              page.ocrText = text;
+              page.source = retryMethod;
+              next[pageNum - 1] = page;
+              return next;
+            });
+            recovered++;
+          } else {
+            stillEmpty.push(pageNum);
+          }
+        } catch {
+          stillEmpty.push(pageNum);
+        }
+      }
+
+      setIsOcrRunning(false);
+      setIsRetrying(false);
+      setOcrProgress("");
+      setLastModifiedAt(Date.now());
+      setRetryResult({ recovered, stillEmpty });
+    },
+    [pdfDoc, ocrResult, runTesseract, runGemini, runGlmOcr]
   );
 
   // --- Batch cleanup all pages ---
@@ -580,10 +588,13 @@ export default function Home() {
         return next;
       });
       setLastModifiedAt(Date.now());
-      // Use setTimeout so state has updated
-      setTimeout(() => {
-        alert(`Cleaned up ${cleaned} page${cleaned !== 1 ? "s" : ""}`);
-      }, 50);
+      setRetryResult(null);
+      setOcrResult({
+        failedPages: [],
+        suspiciousPages: [],
+        originalMethod: "cleanup",
+        totalProcessed: cleaned,
+      });
     },
     []
   );
@@ -888,6 +899,22 @@ export default function Home() {
           />
         </div>
       </header>
+
+      {/* OCR result banner */}
+      <OcrResultBanner
+        result={ocrResult}
+        retryResult={retryResult}
+        isRetrying={isRetrying}
+        onRetry={handleRetry}
+        onGoToPage={(p) => {
+          setCurrentPage(p);
+          setOcrResult(null);
+        }}
+        onDismiss={() => {
+          setOcrResult(null);
+          setRetryResult(null);
+        }}
+      />
 
       {/* Split pane */}
       <div className="flex flex-1 min-h-0">

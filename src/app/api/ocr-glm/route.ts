@@ -10,33 +10,46 @@ const MAAS_URL = "https://open.bigmodel.cn/api/paas/v4/layout_parsing";
 const OCR_PROMPT =
   "OCR this image. Extract ALL text preserving the original formatting, paragraphs, tables, and formulas. Output only the extracted text.";
 
-async function tryMlx(base64Data: string): Promise<string | null> {
-  try {
-    const res = await fetch(MLX_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model: "mlx-community/GLM-OCR-bf16",
-        messages: [
-          {
-            role: "user",
-            content: [
-              { type: "image_url", image_url: { url: `data:image/png;base64,${base64Data}` } },
-              { type: "text", text: OCR_PROMPT },
-            ],
-          },
-        ],
-        max_tokens: 8192,
-        temperature: 0,
-      }),
-      signal: AbortSignal.timeout(120_000),
-    });
-    if (!res.ok) return null;
-    const data = await res.json();
-    return data.choices?.[0]?.message?.content ?? null;
-  } catch {
-    return null;
+async function tryMlx(base64Data: string, retries = 2): Promise<string | null> {
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      const res = await fetch(MLX_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: "mlx-community/GLM-OCR-bf16",
+          messages: [
+            {
+              role: "user",
+              content: [
+                { type: "image_url", image_url: { url: `data:image/png;base64,${base64Data}` } },
+                { type: "text", text: OCR_PROMPT },
+              ],
+            },
+          ],
+          max_tokens: 8192,
+          temperature: 0,
+        }),
+        signal: AbortSignal.timeout(180_000),
+      });
+      if (!res.ok) {
+        if (attempt < retries) {
+          await new Promise((r) => setTimeout(r, 2000));
+          continue;
+        }
+        return null;
+      }
+      const data = await res.json();
+      return data.choices?.[0]?.message?.content ?? null;
+    } catch {
+      if (attempt < retries) {
+        await new Promise((r) => setTimeout(r, 2000));
+        continue;
+      }
+      return null;
+    }
   }
+  return null;
 }
 
 async function tryOllama(base64Data: string): Promise<string | null> {

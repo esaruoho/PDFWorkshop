@@ -3,5 +3,5 @@
 # Usage: ./ocr file.pdf
 #        ./ocr /path/to/folder
 #        ./ocr file.pdf --output /path/to/results
-cd "$(dirname "$0")"
-node batch-ocr.mjs "$@"
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+node "$SCRIPT_DIR/batch-ocr.mjs" "$@"
