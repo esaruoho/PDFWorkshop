@@ -60,8 +60,8 @@ export default function PdfViewer({
           >
             Prev
           </button>
-          <span className="text-sm tabular-nums">
-            {currentPage} / {totalPages}
+          <span className="text-sm tabular-nums min-w-[4em] text-center">
+            {String(currentPage).padStart(String(totalPages).length, "0")} / {totalPages}
           </span>
           <button
             onClick={() => onPageChange(Math.min(totalPages, currentPage + 1))}

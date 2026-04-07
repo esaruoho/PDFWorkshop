@@ -67,3 +67,38 @@ export async function getPageAsImageData(
   await page.render({ canvasContext: ctx, viewport }).promise;
   return canvas.toDataURL("image/png");
 }
+
+/**
+ * Estimate how much "ink" is on a page by counting dark pixels.
+ * Returns a ratio 0..1 where 0 = blank white page, 1 = solid black.
+ * A typical text page scores 0.02-0.15. Below 0.005 is likely blank.
+ */
+export async function getPageInkCoverage(
+  pdfDoc: PDFDocumentProxy,
+  pageNumber: number,
+  scale: number = 0.5 // low res is fine for coverage check
+): Promise<number> {
+  const page = await pdfDoc.getPage(pageNumber);
+  const viewport = page.getViewport({ scale });
+  const canvas = document.createElement("canvas");
+  canvas.height = viewport.height;
+  canvas.width = viewport.width;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return 0;
+  await page.render({ canvasContext: ctx, viewport }).promise;
+  const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+  const data = imageData.data;
+  let darkPixels = 0;
+  const totalPixels = canvas.width * canvas.height;
+  // Sample every 4th pixel for speed
+  for (let i = 0; i < data.length; i += 16) {
+    const r = data[i];
+    const g = data[i + 1];
+    const b = data[i + 2];
+    // Pixel is "dark" if brightness < 180 (on white background)
+    if ((r + g + b) / 3 < 180) {
+      darkPixels++;
+    }
+  }
+  return darkPixels / (totalPixels / 4);
+}

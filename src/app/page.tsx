@@ -9,7 +9,7 @@ import type {
   ProjectFile,
 } from "@/lib/types";
 import { TESSERACT_LANGUAGES } from "@/lib/types";
-import { loadPdfDocument, getPageAsImageData } from "@/lib/pdf-utils";
+import { loadPdfDocument, getPageAsImageData, getPageInkCoverage } from "@/lib/pdf-utils";
 import { cleanupText, type CleanupOptions } from "@/lib/text-cleanup";
 import PdfViewer from "@/components/PdfViewer";
 import OcrEditor from "@/components/OcrEditor";
@@ -439,13 +439,45 @@ export default function Home() {
           failedPages.push(i);
         }
       }
+      // --- Sanity check: find pages that look non-blank but got empty OCR ---
+      setOcrProgress("Sanity check — scanning for missed pages...");
+      const suspiciousPages: number[] = [];
+      for (let i = 1; i <= pdfDoc.numPages; i++) {
+        // Check pages we just processed that ended up empty
+        const pageData = pages[i - 1];
+        const currentText = pageData?.ocrText ?? "";
+        // Skip pages that have text
+        if (currentText.trim().length > 20) continue;
+        // Check ink coverage
+        try {
+          const coverage = await getPageInkCoverage(pdfDoc, i);
+          // > 0.5% ink = probably has content that OCR missed
+          if (coverage > 0.005) {
+            suspiciousPages.push(i);
+          }
+        } catch {
+          // skip coverage check failures
+        }
+      }
+
       setIsOcrRunning(false);
       setOcrProgress("");
       setLastModifiedAt(Date.now());
+
+      // Report results
+      const messages: string[] = [];
       if (failedPages.length > 0) {
-        alert(
+        messages.push(
           `OCR failed on ${failedPages.length} page${failedPages.length > 1 ? "s" : ""}: ${failedPages.join(", ")}`
         );
+      }
+      if (suspiciousPages.length > 0) {
+        messages.push(
+          `${suspiciousPages.length} page${suspiciousPages.length > 1 ? "s have" : " has"} visible content but empty/short OCR text: ${suspiciousPages.join(", ")}.\n\nTry re-OCR'ing these pages individually, or with a different engine.`
+        );
+      }
+      if (messages.length > 0) {
+        alert(messages.join("\n\n"));
       }
     },
     [pdfDoc, runTesseract, runGemini, runGlmOcr, geminiKey, glmOcrKey, pages]
