@@ -338,11 +338,10 @@ export default function Home() {
           apiKey: glmOcrKey,
         }),
       });
-      if (!res.ok) {
-        throw new Error(`GLM-OCR API request failed: ${res.status} ${res.statusText}`);
-      }
       const data = await res.json();
-      if (data.error) throw new Error(data.error);
+      if (!res.ok || data.error) {
+        throw new Error(data.error || `GLM-OCR API request failed: ${res.status}`);
+      }
       return data.text as string;
     },
     [pdfDoc, glmOcrKey]
