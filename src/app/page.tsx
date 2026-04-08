@@ -69,6 +69,11 @@ export default function Home() {
   const [isRetrying, setIsRetrying] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const ocrAbortRef = useRef<AbortController | null>(null);
+  const [showSearch, setShowSearch] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchMatches, setSearchMatches] = useState<{ page: number; index: number }[]>([]);
+  const [searchMatchIndex, setSearchMatchIndex] = useState(0);
+  const searchInputRef = useRef<HTMLInputElement>(null);
 
   // Load settings from localStorage on mount
   useEffect(() => {
@@ -103,6 +108,59 @@ export default function Home() {
     window.addEventListener("beforeunload", handler);
     return () => window.removeEventListener("beforeunload", handler);
   }, [pages, lastSavedAt, lastModifiedAt]);
+
+  // --- Cmd+F search across pages ---
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === "f") {
+        e.preventDefault();
+        setShowSearch(true);
+        setTimeout(() => searchInputRef.current?.focus(), 0);
+      }
+      if (e.key === "Escape" && showSearch) {
+        setShowSearch(false);
+        setSearchQuery("");
+        setSearchMatches([]);
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [showSearch]);
+
+  // Update matches when query changes
+  useEffect(() => {
+    if (!searchQuery.trim()) {
+      setSearchMatches([]);
+      setSearchMatchIndex(0);
+      return;
+    }
+    const q = searchQuery.toLowerCase();
+    const matches: { page: number; index: number }[] = [];
+    for (let i = 0; i < pages.length; i++) {
+      const text = pages[i].ocrText.toLowerCase();
+      let pos = 0;
+      while ((pos = text.indexOf(q, pos)) !== -1) {
+        matches.push({ page: i + 1, index: pos });
+        pos += q.length;
+      }
+    }
+    setSearchMatches(matches);
+    setSearchMatchIndex(0);
+    // Jump to first match
+    if (matches.length > 0) {
+      setCurrentPage(matches[0].page);
+    }
+  }, [searchQuery, pages]);
+
+  const navigateSearch = useCallback(
+    (direction: 1 | -1) => {
+      if (searchMatches.length === 0) return;
+      const next = (searchMatchIndex + direction + searchMatches.length) % searchMatches.length;
+      setSearchMatchIndex(next);
+      setCurrentPage(searchMatches[next].page);
+    },
+    [searchMatches, searchMatchIndex]
+  );
 
   const saveGeminiKey = (key: string) => {
     setGeminiKey(key);
@@ -798,6 +856,21 @@ export default function Home() {
     setLastSavedAt(Date.now());
   }, [pdfData, fileName, totalPages, pages, ocrLanguages]);
 
+  // --- Export OCR as plain text ---
+  const handleExportTxt = useCallback(() => {
+    const allText = pages
+      .map((p) => p.ocrText)
+      .join("\n\n");
+    if (!allText.trim()) return;
+    const blob = new Blob([allText], { type: "text/plain;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = fileName.replace(/\.pdf$/i, "") + "_ocr.txt";
+    a.click();
+    URL.revokeObjectURL(url);
+  }, [pages, fileName]);
+
   return (
     <div
       className="flex flex-col h-screen bg-neutral-950 text-white"
@@ -996,6 +1069,13 @@ export default function Home() {
           >
             Export OCR PDF
           </button>
+          <button
+            onClick={handleExportTxt}
+            disabled={!pdfDoc || pages.every((p) => !p.ocrText)}
+            className="px-3 py-1.5 text-xs rounded bg-indigo-700 hover:bg-indigo-600 disabled:opacity-30 disabled:cursor-not-allowed font-medium"
+          >
+            Export TXT
+          </button>
           <input
             ref={fileInputRef}
             type="file"
@@ -1005,6 +1085,65 @@ export default function Home() {
           />
         </div>
       </header>
+
+      {/* Search bar */}
+      {showSearch && (
+        <div className="flex items-center gap-2 px-4 py-1.5 bg-neutral-800 border-b border-neutral-700 shrink-0">
+          <input
+            ref={searchInputRef}
+            type="text"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                navigateSearch(e.shiftKey ? -1 : 1);
+              }
+              if (e.key === "Escape") {
+                setShowSearch(false);
+                setSearchQuery("");
+                setSearchMatches([]);
+              }
+            }}
+            placeholder="Search across all pages..."
+            className="px-2 py-1 text-sm bg-neutral-900 border border-neutral-600 rounded focus:outline-none focus:border-indigo-500 w-64"
+            autoFocus
+          />
+          <span className="text-xs text-neutral-400 min-w-[5em]">
+            {searchQuery.trim()
+              ? searchMatches.length > 0
+                ? `${searchMatchIndex + 1} / ${searchMatches.length}`
+                : "No matches"
+              : ""}
+          </span>
+          <button
+            onClick={() => navigateSearch(-1)}
+            disabled={searchMatches.length === 0}
+            className="px-1.5 py-0.5 text-xs rounded bg-neutral-700 hover:bg-neutral-600 disabled:opacity-30"
+            title="Previous match (Shift+Enter)"
+          >
+            Prev
+          </button>
+          <button
+            onClick={() => navigateSearch(1)}
+            disabled={searchMatches.length === 0}
+            className="px-1.5 py-0.5 text-xs rounded bg-neutral-700 hover:bg-neutral-600 disabled:opacity-30"
+            title="Next match (Enter)"
+          >
+            Next
+          </button>
+          <button
+            onClick={() => {
+              setShowSearch(false);
+              setSearchQuery("");
+              setSearchMatches([]);
+            }}
+            className="px-1.5 py-0.5 text-xs rounded bg-neutral-700 hover:bg-neutral-600"
+          >
+            Close
+          </button>
+        </div>
+      )}
 
       {/* OCR result banner */}
       <OcrResultBanner

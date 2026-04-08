@@ -435,12 +435,12 @@ export default function OcrEditor({
             Undo
           </button>
 
-          {/* Copy buttons */}
+          {/* Copy buttons — min-w prevents layout shift when text changes to "Copied!" */}
           <button
             onClick={handleCopyPage}
             disabled={!pageData?.ocrText}
             title="Copy current page text to clipboard"
-            className={`px-2 py-1 text-xs rounded disabled:opacity-30 ${copyFeedback === "page" ? "bg-green-700" : "bg-neutral-700 hover:bg-neutral-600"}`}
+            className={`px-2 py-1 text-xs rounded disabled:opacity-30 min-w-[4.5rem] ${copyFeedback === "page" ? "bg-green-700" : "bg-neutral-700 hover:bg-neutral-600"}`}
           >
             {copyFeedback === "page" ? "Copied!" : "Copy Page"}
           </button>
@@ -448,7 +448,7 @@ export default function OcrEditor({
             onClick={handleCopyAll}
             disabled={!allPages?.some((p) => p.ocrText)}
             title="Copy all pages text to clipboard"
-            className={`px-2 py-1 text-xs rounded disabled:opacity-30 ${copyFeedback === "all" ? "bg-green-700" : "bg-neutral-700 hover:bg-neutral-600"}`}
+            className={`px-2 py-1 text-xs rounded disabled:opacity-30 min-w-[4.5rem] ${copyFeedback === "all" ? "bg-green-700" : "bg-neutral-700 hover:bg-neutral-600"}`}
           >
             {copyFeedback === "all" ? "Copied!" : "Copy All"}
           </button>
