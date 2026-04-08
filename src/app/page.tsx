@@ -703,7 +703,7 @@ export default function Home() {
         "https://cdn.jsdelivr.net/gh/notofonts/notofonts.github.io/fonts/NotoSans/hinted/ttf/NotoSans-Regular.ttf";
       const fontRes = await fetch(fontUrl);
       const fontBytes = await fontRes.arrayBuffer();
-      font = await exportDoc.embedFont(fontBytes, { subset: true });
+      font = await exportDoc.embedFont(fontBytes, { subset: false });
     } catch {
       // Fallback: use Helvetica but strip non-WinAnsi characters
       const { StandardFonts } = await import("pdf-lib");
