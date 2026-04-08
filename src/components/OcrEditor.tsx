@@ -117,13 +117,13 @@ export default function OcrEditor({
   const [showDiff, setShowDiff] = useState(false);
   const [cleanupOpts, setCleanupOpts] =
     useState<CleanupOptions>(DEFAULT_CLEANUP);
-  const [copyFeedback, setCopyFeedback] = useState<string | null>(null);
+  const [copyFeedback, setCopyFeedback] = useState<"page" | "all" | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
-  const copyToClipboard = useCallback(async (text: string, label: string) => {
+  const copyToClipboard = useCallback(async (text: string, which: "page" | "all") => {
     try {
       await navigator.clipboard.writeText(text);
-      setCopyFeedback(label);
+      setCopyFeedback(which);
       setTimeout(() => setCopyFeedback(null), 1500);
     } catch {
       alert("Clipboard access denied. Please allow clipboard access in your browser settings.");
@@ -131,7 +131,7 @@ export default function OcrEditor({
   }, []);
 
   const handleCopyPage = useCallback(() => {
-    if (pageData?.ocrText) copyToClipboard(pageData.ocrText, "Page copied");
+    if (pageData?.ocrText) copyToClipboard(pageData.ocrText, "page");
   }, [pageData, copyToClipboard]);
 
   const handleCopyAll = useCallback(() => {
@@ -140,7 +140,7 @@ export default function OcrEditor({
       .map((p, i) => p.ocrText ? `--- Page ${i + 1} ---\n${p.ocrText}` : null)
       .filter(Boolean)
       .join("\n\n");
-    if (allText) copyToClipboard(allText, "All pages copied");
+    if (allText) copyToClipboard(allText, "all");
   }, [allPages, copyToClipboard]);
 
   const closeOcrMenu = useCallback(() => setShowOcrMenu(false), []);
@@ -440,21 +440,18 @@ export default function OcrEditor({
             onClick={handleCopyPage}
             disabled={!pageData?.ocrText}
             title="Copy current page text to clipboard"
-            className="px-2 py-1 text-xs rounded bg-neutral-700 hover:bg-neutral-600 disabled:opacity-30"
+            className={`px-2 py-1 text-xs rounded disabled:opacity-30 ${copyFeedback === "page" ? "bg-green-700" : "bg-neutral-700 hover:bg-neutral-600"}`}
           >
-            Copy Page
+            {copyFeedback === "page" ? "Copied!" : "Copy Page"}
           </button>
           <button
             onClick={handleCopyAll}
             disabled={!allPages?.some((p) => p.ocrText)}
             title="Copy all pages text to clipboard"
-            className="px-2 py-1 text-xs rounded bg-neutral-700 hover:bg-neutral-600 disabled:opacity-30"
+            className={`px-2 py-1 text-xs rounded disabled:opacity-30 ${copyFeedback === "all" ? "bg-green-700" : "bg-neutral-700 hover:bg-neutral-600"}`}
           >
-            Copy All
+            {copyFeedback === "all" ? "Copied!" : "Copy All"}
           </button>
-          {copyFeedback && (
-            <span className="text-xs text-green-400">{copyFeedback}</span>
-          )}
         </div>
       </div>
 
