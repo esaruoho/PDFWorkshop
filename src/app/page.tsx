@@ -68,6 +68,7 @@ export default function Home() {
   const [retryResult, setRetryResult] = useState<RetryResult | null>(null);
   const [isRetrying, setIsRetrying] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const ocrAbortRef = useRef<AbortController | null>(null);
 
   // Load settings from localStorage on mount
   useEffect(() => {
@@ -495,12 +496,15 @@ export default function Home() {
         if (!ok) return;
       }
 
+      const abortController = new AbortController();
+      ocrAbortRef.current = abortController;
       setIsOcrRunning(true);
       let processed = 0;
       const target = overwrite ? pdfDoc.numPages : emptyCount;
       const failedPages: number[] = [];
 
       for (let i = 1; i <= pdfDoc.numPages; i++) {
+        if (abortController.signal.aborted) break;
         if (!overwrite && pages[i - 1]?.ocrText) continue;
 
         processed++;
@@ -508,6 +512,7 @@ export default function Home() {
           const result = await runOcrWithFallback(i, method, (msg) =>
             setOcrProgress(`${processed}/${target} — ${msg}`)
           );
+          if (abortController.signal.aborted) break;
           if (result) {
             setPages((prev) => {
               const next = [...prev];
@@ -556,6 +561,7 @@ export default function Home() {
         }
       }
 
+      ocrAbortRef.current = null;
       setIsOcrRunning(false);
       setOcrProgress("");
       setLastModifiedAt(Date.now());
@@ -569,6 +575,12 @@ export default function Home() {
     },
     [pdfDoc, runTesseract, runGemini, runGlmOcr, geminiKey, glmOcrKey, pages]
   );
+
+  // --- Stop batch OCR ---
+  const handleStopOcr = useCallback(() => {
+    ocrAbortRef.current?.abort();
+    ocrAbortRef.current = null;
+  }, []);
 
   // --- Retry suspicious pages with a different engine ---
   const handleRetry = useCallback(
@@ -705,39 +717,48 @@ export default function Home() {
       const page = exportDoc.getPage(i);
       const text = pages[i]?.ocrText ?? "";
       if (text) {
-        const fontSize = 1;
-        const lines = text.split("\n");
-        let y = page.getHeight() - 10;
+        const pageWidth = page.getWidth();
+        const pageHeight = page.getHeight();
+        // Use a readable font size so PDF viewers can reconstruct text on copy-paste.
+        // Scale font size relative to page height so text fills the page naturally.
+        const lines = text.split("\n").filter((l) => !l.trim().startsWith("[IMAGE"));
+        const totalLines = lines.length || 1;
+        // Target: text block fills ~90% of page height with comfortable line spacing
+        const lineSpacing = 1.35;
+        const maxFontSize = 12;
+        const fontSize = Math.min(maxFontSize, (pageHeight * 0.9) / (totalLines * lineSpacing));
+        const margin = pageWidth * 0.05;
+        let y = pageHeight - margin - fontSize;
+
         for (const line of lines) {
-          if (y < 10) break;
-          if (line.trim().startsWith("[IMAGE")) continue;
+          if (y < margin) break;
           // Filter out characters the font cannot encode
           let safeLine = line;
           try {
             font.encodeText(line);
           } catch {
-            safeLine = line
-              .split("")
-              .filter((ch) => {
-                try {
-                  font.encodeText(ch);
-                  return true;
-                } catch {
-                  return false;
-                }
-              })
-              .join("");
+            safeLine = line.replace(/./gu, (ch) => {
+              try {
+                font.encodeText(ch);
+                return ch;
+              } catch {
+                return "";
+              }
+            });
           }
-          if (!safeLine) continue;
+          if (!safeLine) {
+            y -= fontSize * lineSpacing;
+            continue;
+          }
           page.drawText(safeLine, {
-            x: 10,
+            x: margin,
             y,
             size: fontSize,
             font,
             color: rgb(0, 0, 0),
-            opacity: 0.01,
+            opacity: 0,
           });
-          y -= fontSize + 1;
+          y -= fontSize * lineSpacing;
         }
       }
     }
@@ -931,12 +952,21 @@ export default function Home() {
         </div>
         <div className="flex items-center gap-2">
           {ocrProgress && (
-            <span
-              className="text-xs text-yellow-400 animate-pulse"
-              aria-live="polite"
-            >
-              {ocrProgress}
-            </span>
+            <>
+              <span
+                className="text-xs text-yellow-400 animate-pulse"
+                aria-live="polite"
+              >
+                {ocrProgress}
+              </span>
+              <button
+                onClick={handleStopOcr}
+                className="px-2 py-1 text-xs rounded bg-red-700 hover:bg-red-600 font-medium"
+                title="Stop batch OCR"
+              >
+                Stop
+              </button>
+            </>
           )}
           <button
             onClick={() => setShowSettings(true)}
@@ -1008,6 +1038,7 @@ export default function Home() {
             currentPage={currentPage}
             totalPages={totalPages}
             isOcrRunning={isOcrRunning}
+            allPages={pages}
             onTextChange={handleTextChange}
             onOcrPage={handleOcrPage}
             onOcrAll={handleOcrAll}
