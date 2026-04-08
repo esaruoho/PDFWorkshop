@@ -135,6 +135,7 @@ export default function OcrEditor({
   }, [pageData, copyToClipboard]);
 
   const handleCopyAll = useCallback(() => {
+    if (!allPages) return;
     const allText = allPages
       .map((p, i) => p.ocrText ? `--- Page ${i + 1} ---\n${p.ocrText}` : null)
       .filter(Boolean)
@@ -445,7 +446,7 @@ export default function OcrEditor({
           </button>
           <button
             onClick={handleCopyAll}
-            disabled={!allPages.some((p) => p.ocrText)}
+            disabled={!allPages?.some((p) => p.ocrText)}
             title="Copy all pages text to clipboard"
             className="px-2 py-1 text-xs rounded bg-neutral-700 hover:bg-neutral-600 disabled:opacity-30"
           >
