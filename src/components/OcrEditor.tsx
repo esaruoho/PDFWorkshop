@@ -348,7 +348,7 @@ export default function OcrEditor({
               title="Clean up OCR text"
               className="px-2 py-1 text-xs rounded bg-amber-700 hover:bg-amber-600 disabled:opacity-30"
             >
-              Cleanup \u25BE
+              {"Cleanup \u25BE"}
             </button>
             {showCleanup && (
               <div className="absolute right-0 top-full mt-1 bg-neutral-800 border border-neutral-600 rounded shadow-xl z-20 min-w-[300px] p-3">

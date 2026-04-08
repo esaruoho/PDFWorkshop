@@ -17,6 +17,7 @@ import OcrResultBanner, {
   type OcrResult,
   type RetryResult,
 } from "@/components/OcrResultBanner";
+import { saveState, loadState, clearState, type AutoSaveState } from "@/lib/autosave";
 
 function initPages(count: number): PageData[] {
   return Array.from({ length: count }, (_, i) => ({
@@ -74,6 +75,7 @@ export default function Home() {
   const [searchMatches, setSearchMatches] = useState<{ page: number; index: number }[]>([]);
   const [searchMatchIndex, setSearchMatchIndex] = useState(0);
   const searchInputRef = useRef<HTMLInputElement>(null);
+  const [recoveryState, setRecoveryState] = useState<AutoSaveState | null>(null);
 
   // Load settings from localStorage on mount
   useEffect(() => {
@@ -94,7 +96,33 @@ export default function Home() {
         // ignore bad data
       }
     }
+    // Check for auto-saved recovery state
+    loadState().then((state) => {
+      if (state && state.pages.some((p) => p.ocrText)) {
+        setRecoveryState(state);
+      }
+    });
   }, []);
+
+  // Auto-save to IndexedDB whenever pages change (debounced)
+  const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    if (!pdfData || !pages.some((p) => p.ocrText)) return;
+    if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);
+    autoSaveTimerRef.current = setTimeout(() => {
+      saveState({
+        fileName,
+        totalPages,
+        pages,
+        ocrLanguages,
+        pdfBase64: arrayBufferToBase64(pdfData),
+        savedAt: Date.now(),
+      });
+    }, 2000);
+    return () => {
+      if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);
+    };
+  }, [pages, pdfData, fileName, totalPages, ocrLanguages]);
 
   // Warn before closing with unsaved changes
   useEffect(() => {
@@ -229,6 +257,19 @@ export default function Home() {
     },
     []
   );
+
+  // --- Recovery handlers ---
+  const handleRecover = useCallback(async () => {
+    if (!recoveryState) return;
+    const pdfBuffer = base64ToArrayBuffer(recoveryState.pdfBase64);
+    await loadProject(pdfBuffer, recoveryState.fileName, recoveryState.pages, recoveryState.ocrLanguages);
+    setRecoveryState(null);
+  }, [recoveryState, loadProject]);
+
+  const handleDismissRecovery = useCallback(() => {
+    setRecoveryState(null);
+    clearState();
+  }, []);
 
   // --- File upload (PDF or project) ---
   const handleFileUpload = useCallback(
@@ -1009,8 +1050,8 @@ export default function Home() {
       )}
 
       {/* Top bar */}
-      <header className="flex items-center justify-between px-4 py-2 bg-neutral-900 border-b border-neutral-800 shrink-0">
-        <div className="flex items-center gap-3">
+      <header className="flex items-center justify-between px-4 py-2 bg-neutral-900 border-b border-neutral-800 shrink-0 flex-wrap gap-y-1">
+        <div className="flex items-center gap-3 min-w-0">
           <h1 className="text-base font-bold tracking-tight">PDF Workshop</h1>
           {fileName && (
             <span className="text-xs text-neutral-500 truncate max-w-[300px]">
@@ -1023,7 +1064,7 @@ export default function Home() {
             </span>
           )}
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
           {ocrProgress && (
             <>
               <span
@@ -1085,6 +1126,27 @@ export default function Home() {
           />
         </div>
       </header>
+
+      {/* Recovery banner */}
+      {recoveryState && !pdfDoc && (
+        <div className="flex items-center gap-3 px-4 py-2 bg-amber-900/50 border-b border-amber-700 shrink-0">
+          <span className="text-sm text-amber-200">
+            Unsaved work found: {recoveryState.fileName} ({recoveryState.pages.filter((p) => p.ocrText).length}/{recoveryState.totalPages} pages OCR&apos;d)
+          </span>
+          <button
+            onClick={handleRecover}
+            className="px-3 py-1 text-xs rounded bg-amber-600 hover:bg-amber-500 font-medium"
+          >
+            Restore
+          </button>
+          <button
+            onClick={handleDismissRecovery}
+            className="px-3 py-1 text-xs rounded bg-neutral-700 hover:bg-neutral-600"
+          >
+            Discard
+          </button>
+        </div>
+      )}
 
       {/* Search bar */}
       {showSearch && (
@@ -1161,9 +1223,9 @@ export default function Home() {
         }}
       />
 
-      {/* Split pane */}
-      <div className="flex flex-1 min-h-0">
-        <div className="w-1/2 border-r border-neutral-800">
+      {/* Split pane — stacks vertically on narrow screens */}
+      <div className="flex flex-col md:flex-row flex-1 min-h-0">
+        <div className="h-1/2 md:h-auto md:w-1/2 border-b md:border-b-0 md:border-r border-neutral-800">
           <PdfViewer
             pdfDoc={pdfDoc}
             currentPage={currentPage}
@@ -1171,7 +1233,7 @@ export default function Home() {
             onPageChange={setCurrentPage}
           />
         </div>
-        <div className="w-1/2">
+        <div className="h-1/2 md:h-auto md:w-1/2">
           <OcrEditor
             pageData={currentPageData}
             currentPage={currentPage}
