@@ -150,14 +150,23 @@ async function buildOcrPdf(pdfBytes, pages) {
 }
 
 // --- Main ---
+// Large PDF threshold: skip .pdfws (base64-embedded) for files over this size
+const LARGE_PDF_BYTES = 50 * 1024 * 1024; // 50 MB
+
 async function processPdf(pdfPath, outputDir) {
   const baseName = path.basename(pdfPath, ".pdf");
-  const pdfBuffer = fs.readFileSync(pdfPath);
-  // Keep a clean copy for pdf-lib (pdfjs may transfer/detach the ArrayBuffer)
-  const pdfDataForPdfjs = Uint8Array.from(pdfBuffer);
-  const pdfDataForPdfLib = Uint8Array.from(pdfBuffer);
+  const fileSize = fs.statSync(pdfPath).size;
+  const isLarge = fileSize > LARGE_PDF_BYTES;
 
-  console.log(`\n--- ${baseName}.pdf ---`);
+  if (isLarge) {
+    console.log(`\n--- ${baseName}.pdf --- (${(fileSize / 1024 / 1024).toFixed(0)} MB — large PDF mode)`);
+  } else {
+    console.log(`\n--- ${baseName}.pdf ---`);
+  }
+
+  // For pdfjs: read and copy (pdfjs may detach the ArrayBuffer)
+  const pdfBuffer = fs.readFileSync(pdfPath);
+  const pdfDataForPdfjs = Uint8Array.from(pdfBuffer);
 
   const doc = await getDocument({ data: pdfDataForPdfjs, useSystemFonts: true }).promise;
   const numPages = doc.numPages;
@@ -192,27 +201,40 @@ async function processPdf(pdfPath, outputDir) {
     }
   }
 
-  // Save OCR PDF
+  doc.destroy();
+
+  // Save OCR PDF (re-read the file fresh for pdf-lib — avoids detached buffer)
   const ocrPdfPath = path.join(outputDir, `${baseName}_ocr.pdf`);
-  const ocrPdfBytes = await buildOcrPdf(pdfDataForPdfLib, pages);
+  const freshPdfBytes = Uint8Array.from(fs.readFileSync(pdfPath));
+  const ocrPdfBytes = await buildOcrPdf(freshPdfBytes, pages);
   fs.writeFileSync(ocrPdfPath, ocrPdfBytes);
   console.log(`  Saved: ${ocrPdfPath}`);
 
-  // Save .pdfws project
-  const project = {
-    version: 1,
-    fileName: `${baseName}.pdf`,
-    totalPages: numPages,
-    pages,
-    ocrLanguages: ["eng"],
-    pdfBase64: arrayBufferToBase64(pdfBuffer),
-    savedAt: new Date().toISOString(),
-  };
-  const projectPath = path.join(outputDir, `${baseName}.pdfws`);
-  fs.writeFileSync(projectPath, JSON.stringify(project));
-  console.log(`  Saved: ${projectPath}`);
+  // Save .pdfws project (skip for large PDFs — base64 embedding would be too big)
+  if (!isLarge) {
+    const project = {
+      version: 1,
+      fileName: `${baseName}.pdf`,
+      totalPages: numPages,
+      pages,
+      ocrLanguages: ["eng"],
+      pdfBase64: arrayBufferToBase64(pdfBuffer),
+      savedAt: new Date().toISOString(),
+    };
+    const projectPath = path.join(outputDir, `${baseName}.pdfws`);
+    fs.writeFileSync(projectPath, JSON.stringify(project));
+    console.log(`  Saved: ${projectPath}`);
+  } else {
+    console.log(`  Skipped .pdfws (file too large for base64 embedding)`);
+  }
 
-  doc.destroy();
+  // Always save plain text extract
+  const txtPath = path.join(outputDir, `${baseName}.txt`);
+  const txt = pages
+    .map((pg) => `=== Page ${pg.pageNumber} ===\n${pg.ocrText || ""}`)
+    .join("\n\n");
+  fs.writeFileSync(txtPath, txt);
+  console.log(`  Saved: ${txtPath}`);
 }
 
 async function main() {
