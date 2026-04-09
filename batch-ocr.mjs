@@ -250,9 +250,22 @@ async function main() {
 
   fs.mkdirSync(outputDir, { recursive: true });
 
-  // Check GLM-OCR server availability
-  const testMlx = await tryMlx("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVQI12NgAAIABQAB");
-  const testOllama = !testMlx ? await tryOllama("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVQI12NgAAIABQAB") : null;
+  // Check GLM-OCR server availability (lightweight health checks)
+  let testMlx = false;
+  let testOllama = false;
+  try {
+    const r = await fetch("http://localhost:8080/v1/models", { signal: AbortSignal.timeout(5000) });
+    testMlx = r.ok;
+  } catch {}
+  if (!testMlx) {
+    try {
+      const r = await fetch("http://localhost:11434/api/tags", { signal: AbortSignal.timeout(5000) });
+      if (r.ok) {
+        const d = await r.json();
+        testOllama = d.models?.some(m => m.name?.includes("glm-ocr")) ?? false;
+      }
+    } catch {}
+  }
 
   if (!testMlx && !testOllama) {
     console.error("No GLM-OCR server found. Start MLX (port 8080) or Ollama (port 11434) first.");
