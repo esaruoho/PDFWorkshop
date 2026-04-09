@@ -45,6 +45,15 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 
+# OCR worker queue (keep structure, ignore job data)
+queue/pending/*.job
+queue/processing/*.job
+queue/done/*.job
+queue/failed/*.job
+queue/uploads/
+queue/.work_*
+.ocr-worker.pid
+
 # editors
 .vscode/
 .idea/

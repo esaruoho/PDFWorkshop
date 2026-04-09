@@ -1,0 +1,254 @@
+#!/usr/bin/env bash
+# ocr-submit — Submit a URL for headless OCR on CloudcityMacMini.
+#
+# Usage:
+#   ocr-submit URL                    # Submit PDF URL for OCR
+#   ocr-submit --local URL            # Submit locally (run on Mac Mini itself)
+#   ocr-submit status                 # Show queue status
+#   ocr-submit --help                 # Show help
+#
+# The worker downloads the PDF, OCRs it with GLM-OCR, and drops results
+# into ~/work/comms/queue/ocr-results/ which Syncthing syncs back.
+
+set -euo pipefail
+
+REMOTE_HOST="CloudcityMacMini.local"
+REMOTE_PDFWS="/Users/esaruoho/work/PDFWorkshop"
+REMOTE_QUEUE="${REMOTE_PDFWS}/queue/pending"
+LOCAL_MODE=false
+
+usage() {
+  cat <<'EOF'
+ocr-submit — Submit URLs for headless OCR on CloudcityMacMini
+
+Usage:
+  ocr-submit URL                     Submit PDF URL for OCR on Mac Mini
+  ocr-submit FILE                    Submit local PDF (SCP + OCR)
+  ocr-submit --local URL             Submit locally (when running ON Mac Mini)
+  ocr-submit status                  Show queue status (pending/processing/done)
+  ocr-submit -h, --help              Show this help
+
+Options:
+  --local         Run locally instead of SSH to Mac Mini
+  --engine ENG    OCR engine: glm (default), gemini, tesseract
+  --priority P    Priority: normal (default), high
+  --ingest        Auto-ingest results via fe-ingest.sh after OCR
+
+Examples:
+  ocr-submit https://arxiv.org/pdf/2301.00001
+  ocr-submit ~/Downloads/scanned-paper.pdf
+  ocr-submit --engine gemini https://example.com/report.pdf
+  ocr-submit --ingest https://infinite-energy.com/images/pdfs/IE157-Storms.pdf
+  ocr-submit status
+EOF
+  exit 0
+}
+
+create_job() {
+  local url="$1"
+  local engine="${2:-glm}"
+  local priority="${3:-normal}"
+  local ingest="${4:-false}"
+  local ts
+  ts="$(date +%s)"
+  local safe_name
+  safe_name="$(echo "$url" | sed -E 's|https?://||; s|[^a-zA-Z0-9._-]|_|g' | head -c 120)"
+  local job_file="${ts}_${safe_name}.job"
+
+  cat <<EOF
+target: ${url}
+engine: ${engine}
+priority: ${priority}
+ingest: ${ingest}
+submitted: $(date -u +%Y-%m-%dT%H:%M:%SZ)
+submitted_from: $(hostname -s)
+EOF
+  echo "$job_file"
+}
+
+submit_remote() {
+  local url="$1"
+  local engine="${2:-glm}"
+  local priority="${3:-normal}"
+  local ingest="${4:-false}"
+
+  local ts
+  ts="$(date +%s)"
+  local safe_name
+  safe_name="$(echo "$url" | sed -E 's|https?://||; s|[^a-zA-Z0-9._-]|_|g' | head -c 120)"
+  local job_file="${ts}_${safe_name}.job"
+
+  echo "Submitting OCR job to ${REMOTE_HOST}..."
+  echo "  URL:    ${url}"
+  echo "  Engine: ${engine}"
+  echo ""
+
+  ssh "${REMOTE_HOST}" "mkdir -p ${REMOTE_QUEUE} && cat > ${REMOTE_QUEUE}/${job_file}" <<EOF
+target: ${url}
+engine: ${engine}
+priority: ${priority}
+ingest: ${ingest}
+submitted: $(date -u +%Y-%m-%dT%H:%M:%SZ)
+submitted_from: $(hostname -s)
+EOF
+
+  # Wake the worker if running
+  ssh "${REMOTE_HOST}" "test -f ${REMOTE_PDFWS}/.ocr-worker.pid && kill -USR1 \$(cat ${REMOTE_PDFWS}/.ocr-worker.pid) 2>/dev/null || true"
+
+  echo "Job submitted: ${job_file}"
+  echo "Results will appear in ~/work/comms/queue/ocr-results/ via Syncthing."
+}
+
+submit_file_remote() {
+  local file="$1"
+  local engine="${2:-glm}"
+  local priority="${3:-normal}"
+  local ingest="${4:-false}"
+
+  local basename
+  basename="$(basename "$file")"
+
+  echo "Uploading ${basename} to ${REMOTE_HOST}..."
+
+  # SCP the file to a staging area
+  ssh "${REMOTE_HOST}" "mkdir -p ${REMOTE_PDFWS}/queue/uploads"
+  scp "$file" "${REMOTE_HOST}:${REMOTE_PDFWS}/queue/uploads/${basename}"
+
+  # Create job pointing to the uploaded file
+  local ts
+  ts="$(date +%s)"
+  local safe_name
+  safe_name="$(echo "$basename" | sed -E 's|[^a-zA-Z0-9._-]|_|g')"
+  local job_file="${ts}_${safe_name}.job"
+
+  ssh "${REMOTE_HOST}" "mkdir -p ${REMOTE_QUEUE} && cat > ${REMOTE_QUEUE}/${job_file}" <<EOF
+target: file://${REMOTE_PDFWS}/queue/uploads/${basename}
+engine: ${engine}
+priority: ${priority}
+ingest: ${ingest}
+submitted: $(date -u +%Y-%m-%dT%H:%M:%SZ)
+submitted_from: $(hostname -s)
+EOF
+
+  ssh "${REMOTE_HOST}" "test -f ${REMOTE_PDFWS}/.ocr-worker.pid && kill -USR1 \$(cat ${REMOTE_PDFWS}/.ocr-worker.pid) 2>/dev/null || true"
+
+  echo "Job submitted: ${job_file}"
+  echo "Results will appear in ~/work/comms/queue/ocr-results/ via Syncthing."
+}
+
+submit_local() {
+  local url="$1"
+  local engine="${2:-glm}"
+  local priority="${3:-normal}"
+  local ingest="${4:-false}"
+
+  local script_dir
+  script_dir="$(cd "$(dirname "$0")" && pwd)"
+  local pending_dir="${script_dir}/queue/pending"
+  mkdir -p "$pending_dir"
+
+  local ts
+  ts="$(date +%s)"
+  local safe_name
+  safe_name="$(echo "$url" | sed -E 's|https?://||; s|[^a-zA-Z0-9._-]|_|g' | head -c 120)"
+  local job_file="${ts}_${safe_name}.job"
+
+  cat > "${pending_dir}/${job_file}" <<EOF
+target: ${url}
+engine: ${engine}
+priority: ${priority}
+ingest: ${ingest}
+submitted: $(date -u +%Y-%m-%dT%H:%M:%SZ)
+submitted_from: $(hostname -s)
+EOF
+
+  # Wake local worker
+  local pidfile="${script_dir}/.ocr-worker.pid"
+  if [[ -f "$pidfile" ]]; then
+    kill -USR1 "$(cat "$pidfile")" 2>/dev/null || true
+  fi
+
+  echo "Job submitted locally: ${job_file}"
+}
+
+show_status() {
+  local target_host="${1:-remote}"
+
+  if [[ "$target_host" == "local" ]]; then
+    local script_dir
+    script_dir="$(cd "$(dirname "$0")" && pwd)"
+    local base="${script_dir}/queue"
+  else
+    echo "Queue status on ${REMOTE_HOST}:"
+    echo ""
+    ssh "${REMOTE_HOST}" "cd ${REMOTE_PDFWS} && \
+      echo \"Pending:    \$(ls queue/pending/*.job 2>/dev/null | wc -l | tr -d ' ')\" && \
+      echo \"Processing: \$(ls queue/processing/*.job 2>/dev/null | wc -l | tr -d ' ')\" && \
+      echo \"Done:       \$(ls queue/done/*.job 2>/dev/null | wc -l | tr -d ' ')\" && \
+      echo \"Failed:     \$(ls queue/failed/*.job 2>/dev/null | wc -l | tr -d ' ')\" && \
+      echo '' && \
+      if ls queue/pending/*.job &>/dev/null; then \
+        echo 'Pending jobs:'; \
+        for f in queue/pending/*.job; do \
+          echo \"  \$(basename \"\$f\")\"; \
+        done; \
+      fi && \
+      if ls queue/processing/*.job &>/dev/null; then \
+        echo 'Processing:'; \
+        for f in queue/processing/*.job; do \
+          echo \"  \$(basename \"\$f\")\"; \
+        done; \
+      fi"
+    return
+  fi
+
+  echo "Queue status (local):"
+  echo ""
+  echo "Pending:    $(ls "${base}/pending/"*.job 2>/dev/null | wc -l | tr -d ' ')"
+  echo "Processing: $(ls "${base}/processing/"*.job 2>/dev/null | wc -l | tr -d ' ')"
+  echo "Done:       $(ls "${base}/done/"*.job 2>/dev/null | wc -l | tr -d ' ')"
+  echo "Failed:     $(ls "${base}/failed/"*.job 2>/dev/null | wc -l | tr -d ' ')"
+}
+
+# --- Parse arguments ---
+ENGINE="glm"
+PRIORITY="normal"
+INGEST="false"
+POSITIONAL=()
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -h|--help)     usage ;;
+    --local)       LOCAL_MODE=true; shift ;;
+    --engine)      ENGINE="$2"; shift 2 ;;
+    --priority)    PRIORITY="$2"; shift 2 ;;
+    --ingest)      INGEST="true"; shift ;;
+    status)        show_status "$( [[ "$LOCAL_MODE" == true ]] && echo local || echo remote )"; exit 0 ;;
+    *)             POSITIONAL+=("$1"); shift ;;
+  esac
+done
+
+if [[ ${#POSITIONAL[@]} -eq 0 ]]; then
+  echo "ERROR: No URL or file provided" >&2
+  echo "Usage: ocr-submit URL" >&2
+  exit 1
+fi
+
+TARGET="${POSITIONAL[0]}"
+
+# Detect if target is a local file
+if [[ -f "$TARGET" ]]; then
+  if [[ "$LOCAL_MODE" == true ]]; then
+    # Local file, local mode — use file:// URL
+    TARGET="file://$(cd "$(dirname "$TARGET")" && pwd)/$(basename "$TARGET")"
+    submit_local "$TARGET" "$ENGINE" "$PRIORITY" "$INGEST"
+  else
+    submit_file_remote "$TARGET" "$ENGINE" "$PRIORITY" "$INGEST"
+  fi
+else
+  if [[ "$LOCAL_MODE" == true ]]; then
+    submit_local "$TARGET" "$ENGINE" "$PRIORITY" "$INGEST"
+  else
+    submit_remote "$TARGET" "$ENGINE" "$PRIORITY" "$INGEST"
+  fi
+fi

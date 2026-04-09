@@ -1,0 +1,335 @@
+#!/usr/bin/env bash
+# ocr-worker — Queue-based OCR daemon for CloudcityMacMini.
+#
+# Polls queue/pending/ for .job files, downloads PDFs, runs OCR via batch-ocr.mjs,
+# and drops results into ~/work/comms/queue/ocr-results/ for Syncthing sync.
+#
+# Modeled after merlib-mirror's mirror-worker pattern:
+#   - FIFO processing (oldest job first)
+#   - Self-healing (recovers stuck jobs on startup)
+#   - USR1 signal wakeup (from ocr-submit)
+#   - Self-update (restarts if scripts change)
+#   - PID file for signaling
+
+set -euo pipefail
+
+export PATH="/opt/homebrew/bin:$PATH"
+
+REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
+PENDING_DIR="$REPO_DIR/queue/pending"
+PROCESSING_DIR="$REPO_DIR/queue/processing"
+DONE_DIR="$REPO_DIR/queue/done"
+FAILED_DIR="$REPO_DIR/queue/failed"
+UPLOADS_DIR="$REPO_DIR/queue/uploads"
+RESULTS_DIR="${HOME}/work/comms/queue/ocr-results"
+OCR_SCRIPT="$REPO_DIR/batch-ocr.mjs"
+
+POLL_IDLE=120    # seconds between checks when queue is empty
+POLL_ACTIVE=10   # seconds between jobs
+RUN_ONCE=false
+
+for arg in "$@"; do
+  case "$arg" in
+    --once)    RUN_ONCE=true ;;
+    --verbose) export VERBOSE=1 ;;
+  esac
+done
+
+log()  { echo "[$(date +%H:%M:%S)] $*"; }
+idle() { [[ "${VERBOSE:-}" == "1" ]] && log "$*" || true; }
+
+# --- PID file ---
+PIDFILE="$REPO_DIR/.ocr-worker.pid"
+echo $$ > "$PIDFILE"
+
+cleanup() { rm -f "$PIDFILE"; }
+trap cleanup EXIT
+trap 'log "Woken by signal"' USR1
+
+# --- Self-update hash ---
+WORKER_HASH=""
+
+get_worker_hash() {
+  md5 -q "$REPO_DIR/ocr-worker" "$REPO_DIR/start-ocr.sh" 2>/dev/null | md5 -q 2>/dev/null || echo "none"
+}
+
+check_self_update() {
+  local new_hash
+  new_hash="$(get_worker_hash)"
+  if [[ -n "$WORKER_HASH" && "$new_hash" != "$WORKER_HASH" ]]; then
+    log "Scripts updated — restarting worker..."
+    exec "$REPO_DIR/ocr-worker" "$@"
+  fi
+  WORKER_HASH="$new_hash"
+}
+
+# --- Ensure directories exist ---
+mkdir -p "$PENDING_DIR" "$PROCESSING_DIR" "$DONE_DIR" "$FAILED_DIR" "$UPLOADS_DIR" "$RESULTS_DIR"
+
+# --- Recovery: move stuck processing jobs back to pending ---
+recover_stuck() {
+  local stuck
+  stuck="$(ls "$PROCESSING_DIR"/*.job 2>/dev/null || true)"
+  if [[ -n "$stuck" ]]; then
+    log "Recovering stuck jobs from processing/"
+    for f in $stuck; do
+      mv "$f" "$PENDING_DIR/"
+      log "  Recovered: $(basename "$f")"
+    done
+  fi
+}
+
+# --- Parse .job file ---
+parse_job() {
+  local job_file="$1"
+  local key="$2"
+  grep "^${key}:" "$job_file" 2>/dev/null | sed "s/^${key}:[[:space:]]*//" || echo ""
+}
+
+# --- Download PDF from URL ---
+download_pdf() {
+  local url="$1"
+  local output_dir="$2"
+
+  # Handle file:// URLs (local files or SCP'd uploads)
+  if [[ "$url" == file://* ]]; then
+    local local_path="${url#file://}"
+    if [[ -f "$local_path" ]]; then
+      local basename
+      basename="$(basename "$local_path")"
+      cp "$local_path" "${output_dir}/${basename}"
+      echo "${output_dir}/${basename}"
+      return 0
+    else
+      log "  ERROR: Local file not found: $local_path"
+      return 1
+    fi
+  fi
+
+  # Derive filename from URL
+  local filename
+  filename="$(basename "$url" | sed 's/[?#].*//')"
+
+  # If no .pdf extension, add one
+  if [[ "${filename,,}" != *.pdf ]]; then
+    filename="${filename}.pdf"
+  fi
+
+  local output_path="${output_dir}/${filename}"
+
+  log "  Downloading: ${url}"
+  if curl -fsSL --max-time 300 --retry 3 -o "$output_path" "$url" 2>/dev/null; then
+    # Verify it's actually a PDF (check magic bytes)
+    local magic
+    magic="$(head -c 5 "$output_path" 2>/dev/null || echo "")"
+    if [[ "$magic" == "%PDF-" ]]; then
+      echo "$output_path"
+      return 0
+    else
+      log "  WARNING: Downloaded file is not a PDF (magic: ${magic})"
+      # It might be an HTML page with a PDF link — try to follow redirects
+      rm -f "$output_path"
+      if curl -fsSL --max-time 300 --retry 3 -L -o "$output_path" "$url" 2>/dev/null; then
+        magic="$(head -c 5 "$output_path" 2>/dev/null || echo "")"
+        if [[ "$magic" == "%PDF-" ]]; then
+          echo "$output_path"
+          return 0
+        fi
+      fi
+      log "  ERROR: Could not download a valid PDF"
+      rm -f "$output_path"
+      return 1
+    fi
+  else
+    log "  ERROR: Download failed"
+    return 1
+  fi
+}
+
+# --- Check OCR backend availability ---
+check_ocr_backend() {
+  # Test MLX
+  if curl -sf --max-time 5 "http://localhost:8080/chat/completions" \
+    -X POST -H "Content-Type: application/json" \
+    -d '{"model":"mlx-community/GLM-OCR-bf16","messages":[{"role":"user","content":"test"}],"max_tokens":1}' \
+    >/dev/null 2>&1; then
+    echo "mlx"
+    return 0
+  fi
+
+  # Test Ollama
+  if curl -sf --max-time 5 "http://localhost:11434/api/generate" \
+    -X POST -H "Content-Type: application/json" \
+    -d '{"model":"glm-ocr:latest","prompt":"test","stream":false}' \
+    >/dev/null 2>&1; then
+    echo "ollama"
+    return 0
+  fi
+
+  echo "none"
+  return 1
+}
+
+# --- Process a single job ---
+process_job() {
+  local job_file="$1"
+  local job_name
+  job_name="$(basename "$job_file" .job)"
+
+  log "Processing: ${job_name}"
+
+  # Parse job fields
+  local target engine priority ingest submitted_from
+  target="$(parse_job "$job_file" "target")"
+  engine="$(parse_job "$job_file" "engine")"
+  priority="$(parse_job "$job_file" "priority")"
+  ingest="$(parse_job "$job_file" "ingest")"
+  submitted_from="$(parse_job "$job_file" "submitted_from")"
+
+  engine="${engine:-glm}"
+  ingest="${ingest:-false}"
+
+  if [[ -z "$target" ]]; then
+    log "  ERROR: No target URL in job file"
+    mv "$job_file" "$FAILED_DIR/"
+    return 1
+  fi
+
+  # Move to processing
+  mv "$job_file" "$PROCESSING_DIR/"
+  local proc_job="$PROCESSING_DIR/$(basename "$job_file")"
+
+  # Create a temp working directory for this job
+  local work_dir
+  work_dir="$(mktemp -d "${REPO_DIR}/queue/.work_${job_name}_XXXX")"
+
+  # Download PDF
+  local pdf_path
+  if ! pdf_path="$(download_pdf "$target" "$work_dir")"; then
+    log "  FAILED: Could not download PDF"
+    echo "error: download_failed" >> "$proc_job"
+    mv "$proc_job" "$FAILED_DIR/"
+    rm -rf "$work_dir"
+    return 1
+  fi
+
+  log "  PDF: $(basename "$pdf_path")"
+
+  # Create output directory
+  local output_dir="${work_dir}/output"
+  mkdir -p "$output_dir"
+
+  # Run OCR
+  log "  Running OCR (engine: ${engine})..."
+  local ocr_exit=0
+  if ! node "$OCR_SCRIPT" "$pdf_path" --output "$output_dir" 2>&1 | while IFS= read -r line; do
+    echo "  [ocr] $line"
+  done; then
+    ocr_exit=1
+  fi
+
+  # Check if output was produced (even partial results are valuable)
+  local result_count
+  result_count="$(ls "$output_dir"/*_ocr.pdf "$output_dir"/*.pdfws 2>/dev/null | wc -l | tr -d ' ')"
+
+  if [[ "$result_count" -eq 0 ]]; then
+    log "  FAILED: No OCR output produced"
+    echo "error: ocr_failed" >> "$proc_job"
+    mv "$proc_job" "$FAILED_DIR/"
+    rm -rf "$work_dir"
+    return 1
+  fi
+
+  # Copy results to Syncthing output directory
+  log "  Copying results to Syncthing (${RESULTS_DIR})..."
+  mkdir -p "$RESULTS_DIR"
+  cp "$output_dir"/* "$RESULTS_DIR/" 2>/dev/null || true
+
+  # Also extract plain text for easy consumption
+  local base_name
+  base_name="$(basename "$pdf_path" .pdf)"
+  if [[ -f "$output_dir/${base_name}.pdfws" ]]; then
+    # Extract text from .pdfws JSON
+    node -e "
+      const fs = require('fs');
+      const p = JSON.parse(fs.readFileSync('${output_dir}/${base_name}.pdfws', 'utf8'));
+      const txt = p.pages.map(pg => '=== Page ' + pg.pageNumber + ' ===\n' + (pg.ocrText || '')).join('\n\n');
+      fs.writeFileSync('${output_dir}/${base_name}.txt', txt);
+    " 2>/dev/null && cp "$output_dir/${base_name}.txt" "$RESULTS_DIR/" || true
+  fi
+
+  # Record completion metadata
+  cat >> "$proc_job" <<EOF
+completed: $(date -u +%Y-%m-%dT%H:%M:%SZ)
+results: ${result_count} files
+output_dir: ${RESULTS_DIR}
+backend: ${engine}
+EOF
+
+  # Move job to done
+  mv "$proc_job" "$DONE_DIR/"
+  log "  DONE: ${result_count} files → ${RESULTS_DIR}/"
+
+  # Cleanup working directory
+  rm -rf "$work_dir"
+
+  # If ingest requested, trigger fe-ingest.sh on the result
+  if [[ "$ingest" == "true" ]]; then
+    local fe_ingest="${HOME}/.claude/skills/free-energy/bin/fe-ingest.sh"
+    if [[ -x "$fe_ingest" ]]; then
+      log "  Auto-ingesting via fe-ingest.sh..."
+      "$fe_ingest" "$RESULTS_DIR/${base_name}_ocr.pdf" 2>&1 | while IFS= read -r line; do
+        echo "  [ingest] $line"
+      done || log "  WARNING: Ingest had errors (non-fatal)"
+    fi
+  fi
+
+  return 0
+}
+
+# --- Main loop ---
+log "=== PDFWorkshop OCR Worker ==="
+log "Queue:   ${PENDING_DIR}"
+log "Results: ${RESULTS_DIR} (Syncthing)"
+log "PID:     $$ (${PIDFILE})"
+log ""
+
+# Check OCR backend
+backend="$(check_ocr_backend || true)"
+if [[ "$backend" == "none" ]]; then
+  log "WARNING: No OCR backend detected (MLX :8080 / Ollama :11434)"
+  log "Jobs will fail until a backend is available."
+else
+  log "OCR backend: ${backend}"
+fi
+
+# Recover any stuck jobs
+recover_stuck
+WORKER_HASH="$(get_worker_hash)"
+
+while true; do
+  # Find oldest pending job (FIFO)
+  local_job="$(ls -t "$PENDING_DIR"/*.job 2>/dev/null | tail -1 || true)"
+
+  if [[ -n "$local_job" ]]; then
+    process_job "$local_job" || true
+    check_self_update
+
+    if [[ "$RUN_ONCE" == true ]]; then
+      log "Single-run mode — exiting."
+      exit 0
+    fi
+
+    # Short pause between jobs
+    sleep "$POLL_ACTIVE"
+  else
+    if [[ "$RUN_ONCE" == true ]]; then
+      log "No pending jobs. Single-run mode — exiting."
+      exit 0
+    fi
+
+    idle "Queue empty — sleeping ${POLL_IDLE}s..."
+    sleep "$POLL_IDLE" &
+    wait $! 2>/dev/null || true   # USR1 interrupts sleep
+  fi
+done
