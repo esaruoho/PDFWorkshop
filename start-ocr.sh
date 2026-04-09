@@ -48,18 +48,12 @@ fi
 
 # Check for GLM-OCR backend
 check_backend() {
-  if curl -sf --max-time 3 "http://localhost:8080/chat/completions" \
-    -X POST -H "Content-Type: application/json" \
-    -d '{"model":"mlx-community/GLM-OCR-bf16","messages":[{"role":"user","content":"test"}],"max_tokens":1}' \
-    >/dev/null 2>&1; then
+  if curl -sf --max-time 3 "http://localhost:8080/v1/models" >/dev/null 2>&1; then
     echo "MLX (:8080)"
     return 0
   fi
 
-  if curl -sf --max-time 3 "http://localhost:11434/api/generate" \
-    -X POST -H "Content-Type: application/json" \
-    -d '{"model":"glm-ocr:latest","prompt":"test","stream":false}' \
-    >/dev/null 2>&1; then
+  if curl -sf --max-time 3 "http://localhost:11434/api/tags" 2>/dev/null | grep -q "glm-ocr"; then
     echo "Ollama (:11434)"
     return 0
   fi
