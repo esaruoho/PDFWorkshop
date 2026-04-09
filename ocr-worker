@@ -22,6 +22,7 @@ DONE_DIR="$REPO_DIR/queue/done"
 FAILED_DIR="$REPO_DIR/queue/failed"
 UPLOADS_DIR="$REPO_DIR/queue/uploads"
 RESULTS_DIR="${HOME}/work/comms/queue/ocr-results"
+INBOX_DIR="${HOME}/work/comms/queue/ocr-inbox"
 OCR_SCRIPT="$REPO_DIR/batch-ocr.mjs"
 
 POLL_IDLE=120    # seconds between checks when queue is empty
@@ -64,7 +65,7 @@ check_self_update() {
 }
 
 # --- Ensure directories exist ---
-mkdir -p "$PENDING_DIR" "$PROCESSING_DIR" "$DONE_DIR" "$FAILED_DIR" "$UPLOADS_DIR" "$RESULTS_DIR"
+mkdir -p "$PENDING_DIR" "$PROCESSING_DIR" "$DONE_DIR" "$FAILED_DIR" "$UPLOADS_DIR" "$RESULTS_DIR" "$INBOX_DIR"
 
 # --- Recovery: move stuck processing jobs back to pending ---
 recover_stuck() {
@@ -268,6 +269,7 @@ EOF
 # --- Main loop ---
 log "=== PDFWorkshop OCR Worker ==="
 log "Queue:   ${PENDING_DIR}"
+log "Inbox:   ${INBOX_DIR} (drop PDFs here)"
 log "Results: ${RESULTS_DIR} (Syncthing)"
 log "PID:     $$ (${PIDFILE})"
 log ""
@@ -286,6 +288,39 @@ recover_stuck
 WORKER_HASH="$(get_worker_hash)"
 
 while true; do
+  # --- Scan inbox for dropped PDFs (Syncthing drop folder) ---
+  for inbox_pdf in "$INBOX_DIR"/*.pdf "$INBOX_DIR"/*.PDF; do
+    [[ -f "$inbox_pdf" ]] || continue
+    local_basename="$(basename "$inbox_pdf")"
+
+    # Skip partially-synced files (still growing)
+    local_size1="$(wc -c < "$inbox_pdf" 2>/dev/null | tr -d ' ')"
+    sleep 2
+    local_size2="$(wc -c < "$inbox_pdf" 2>/dev/null | tr -d ' ')"
+    if [[ "$local_size1" != "$local_size2" ]]; then
+      idle "Inbox: ${local_basename} still syncing (${local_size1} → ${local_size2})..."
+      continue
+    fi
+
+    log "Inbox: found ${local_basename} ($(( local_size2 / 1024 / 1024 )) MB)"
+
+    # Move to uploads and create a job
+    mv "$inbox_pdf" "$UPLOADS_DIR/" 2>/dev/null || continue
+    local ts
+    ts="$(date +%s)"
+    local safe_name
+    safe_name="$(echo "$local_basename" | sed -E 's/[^a-zA-Z0-9._-]/_/g')"
+    cat > "$PENDING_DIR/${ts}_${safe_name}.job" <<JOEOF
+target: file://${UPLOADS_DIR}/${local_basename}
+engine: glm
+priority: normal
+ingest: false
+submitted: $(date -u +%Y-%m-%dT%H:%M:%SZ)
+submitted_from: inbox
+JOEOF
+    log "  Created job from inbox: ${safe_name}"
+  done
+
   # Find oldest pending job (FIFO)
   local_job="$(ls -t "$PENDING_DIR"/*.job 2>/dev/null | tail -1 || true)"
 
