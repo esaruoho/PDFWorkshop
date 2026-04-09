@@ -152,8 +152,9 @@ async function buildOcrPdf(pdfBytes, pages) {
 // --- Main ---
 async function processPdf(pdfPath, outputDir) {
   const baseName = path.basename(pdfPath, ".pdf");
-  const pdfBytes = fs.readFileSync(pdfPath);
-  const pdfData = new Uint8Array(pdfBytes);
+  const pdfBuffer = fs.readFileSync(pdfPath);
+  // Create a proper copy — Node Buffer's underlying ArrayBuffer can be shared/offset
+  const pdfData = Uint8Array.from(pdfBuffer);
 
   console.log(`\n--- ${baseName}.pdf ---`);
 
