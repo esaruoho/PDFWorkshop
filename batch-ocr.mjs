@@ -17,11 +17,12 @@ import { createCanvas } from "canvas";
 import { getDocument, GlobalWorkerOptions } from "pdfjs-dist/legacy/build/pdf.mjs";
 import { PDFDocument, rgb, StandardFonts } from "pdf-lib";
 
-// Disable worker for Node.js — use fake worker (no Web Worker threads)
-GlobalWorkerOptions.workerSrc = new URL(
-  "pdfjs-dist/legacy/build/pdf.worker.mjs",
-  import.meta.url
-).href;
+// Disable worker for Node.js — point to actual worker file
+import { fileURLToPath } from "url";
+import { createRequire } from "module";
+const __require = createRequire(import.meta.url);
+const workerPath = __require.resolve("pdfjs-dist/legacy/build/pdf.worker.mjs");
+GlobalWorkerOptions.workerSrc = new URL(`file://${workerPath}`).href;
 
 // --- Config ---
 const MLX_URL = "http://localhost:8080/chat/completions";
