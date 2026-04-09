@@ -154,8 +154,15 @@ async function buildOcrPdf(pdfBytes, pages) {
 // Large PDF threshold: skip .pdfws (base64-embedded) for files over this size
 const LARGE_PDF_BYTES = 50 * 1024 * 1024; // 50 MB
 
-// execSync with proper PATH (nohup workers may lack /usr/bin in PATH)
-const EXEC_OPTS = { env: { ...process.env, PATH: `/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin:${process.env.PATH || ""}` } };
+// execSync with proper PATH and PYTHONPATH (nohup workers may lack site-packages)
+const HOME = process.env.HOME || "/Users/esaruoho";
+const EXEC_OPTS = {
+  env: {
+    ...process.env,
+    PATH: `/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin:${process.env.PATH || ""}`,
+    PYTHONPATH: `${HOME}/Library/Python/3.9/lib/python/site-packages:${process.env.PYTHONPATH || ""}`,
+  },
+};
 
 // Check if PyMuPDF is available for fallback rendering
 function hasPyMuPDF() {
