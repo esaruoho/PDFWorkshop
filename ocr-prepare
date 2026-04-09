@@ -1,0 +1,226 @@
+#!/usr/bin/env bash
+# ocr-prepare — Downscale a PDF for OCR and optionally submit to Mac Mini.
+#
+# Usage:
+#   ocr-prepare FILE.pdf                     # Downscale to 200dpi, save alongside original
+#   ocr-prepare FILE.pdf --dpi 150           # Custom DPI
+#   ocr-prepare FILE.pdf --submit            # Downscale + submit to Mac Mini for OCR
+#   ocr-prepare FILE.pdf --submit --ingest   # Downscale + submit + auto-ingest results
+#   ocr-prepare FILE.pdf --info              # Just show PDF info (page count, size, DPI estimate)
+#
+# The original file is never modified. Output goes to <name>_200dpi.pdf alongside it.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+OCR_SUBMIT="${SCRIPT_DIR}/ocr-submit"
+TARGET_DPI=200
+SUBMIT=false
+INGEST=false
+INFO_ONLY=false
+
+usage() {
+  cat <<'EOF'
+ocr-prepare — Downscale large PDFs for efficient OCR
+
+Usage:
+  ocr-prepare FILE.pdf                     Downscale to 200dpi alongside original
+  ocr-prepare FILE.pdf --dpi 150           Custom target DPI
+  ocr-prepare FILE.pdf --submit            Downscale + submit to Mac Mini worker
+  ocr-prepare FILE.pdf --submit --ingest   Downscale + submit + auto-ingest
+  ocr-prepare FILE.pdf --info              Show PDF info (pages, size, estimated DPI)
+  ocr-prepare --help                       Show this help
+
+Options:
+  --dpi N         Target DPI (default: 200, good for OCR)
+  --submit        Submit downscaled PDF to Mac Mini OCR worker
+  --ingest        Auto-ingest OCR results (requires --submit)
+  --info          Just analyze, don't convert
+  --quality Q     JPEG quality 0-100 (default: 85)
+
+Examples:
+  ocr-prepare ~/Downloads/huge-scan.pdf
+  ocr-prepare ~/Downloads/huge-scan.pdf --submit
+  ocr-prepare ~/Downloads/huge-scan.pdf --dpi 150 --submit --ingest
+EOF
+  exit 0
+}
+
+# Show PDF info
+show_info() {
+  local file="$1"
+  local size_mb
+  size_mb="$(du -m "$file" | cut -f1)"
+
+  echo "╔═══════════════════════════════════════════════╗"
+  echo "║  PDF Analysis                                 ║"
+  echo "╚═══════════════════════════════════════════════╝"
+  echo ""
+  echo "  File:  $(basename "$file")"
+  echo "  Size:  ${size_mb} MB"
+
+  # Use python3 + PyMuPDF for detailed info
+  python3 -c "
+import sys
+try:
+    try:
+        import pymupdf as fitz
+    except ImportError:
+        import fitz
+except ImportError:
+    print('  (Install pymupdf for detailed analysis: pip3 install pymupdf)')
+    sys.exit(0)
+
+doc = fitz.open('${file}')
+print(f'  Pages: {doc.page_count}')
+
+# Sample first page for DPI estimate
+if doc.page_count > 0:
+    page = doc[0]
+    # Check for images
+    images = page.get_images(full=True)
+    if images:
+        # Get first image resolution
+        xref = images[0][0]
+        img = doc.extract_image(xref)
+        w, h = img['width'], img['height']
+        # Page size in inches
+        rect = page.rect
+        pw_in = rect.width / 72
+        ph_in = rect.height / 72
+        est_dpi_w = int(w / pw_in) if pw_in > 0 else 0
+        est_dpi_h = int(h / ph_in) if ph_in > 0 else 0
+        est_dpi = max(est_dpi_w, est_dpi_h)
+        print(f'  Image:  {w}x{h} px')
+        print(f'  Page:   {rect.width:.0f}x{rect.height:.0f} pt ({pw_in:.1f}x{ph_in:.1f} in)')
+        print(f'  Est DPI: ~{est_dpi}')
+        print(f'  Images/page: {len(images)}')
+
+        # Estimate size at 200 DPI
+        ratio = 200 / est_dpi if est_dpi > 200 else 1
+        est_size = int(${size_mb} * ratio * ratio)
+        if ratio < 1:
+            print(f'')
+            print(f'  At 200 DPI: ~{est_size} MB (estimated)')
+    else:
+        print('  Type: text-based (no embedded images)')
+        print('  Note: downscaling has no effect on text PDFs')
+
+doc.close()
+" 2>/dev/null || echo "  (pymupdf not available for analysis)"
+}
+
+# Downscale PDF using Ghostscript
+downscale_gs() {
+  local input="$1"
+  local output="$2"
+  local dpi="$3"
+  local quality="${4:-85}"
+
+  echo "Downscaling with Ghostscript..."
+  echo "  Input:   $(basename "$input") ($(du -m "$input" | cut -f1) MB)"
+  echo "  Target:  ${dpi} DPI, quality ${quality}"
+  echo ""
+
+  gs -sDEVICE=pdfwrite \
+     -dCompatibilityLevel=1.4 \
+     -dPDFSETTINGS=/ebook \
+     -dDownsampleColorImages=true \
+     -dDownsampleGrayImages=true \
+     -dDownsampleMonoImages=true \
+     -dColorImageResolution="${dpi}" \
+     -dGrayImageResolution="${dpi}" \
+     -dMonoImageResolution="${dpi}" \
+     -dColorImageDownsampleType=/Bicubic \
+     -dGrayImageDownsampleType=/Bicubic \
+     -dJPEGQ="${quality}" \
+     -dNOPAUSE -dBATCH -dQUIET \
+     -sOutputFile="$output" \
+     "$input"
+
+  local out_size
+  out_size="$(du -m "$output" | cut -f1)"
+  local in_size
+  in_size="$(du -m "$input" | cut -f1)"
+
+  echo "  Output:  $(basename "$output") (${out_size} MB)"
+  echo "  Saved:   $((in_size - out_size)) MB ($(( (in_size - out_size) * 100 / in_size ))% reduction)"
+}
+
+# --- Parse arguments ---
+QUALITY=85
+POSITIONAL=()
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -h|--help)    usage ;;
+    --dpi)        TARGET_DPI="$2"; shift 2 ;;
+    --quality)    QUALITY="$2"; shift 2 ;;
+    --submit)     SUBMIT=true; shift ;;
+    --ingest)     INGEST=true; shift ;;
+    --info)       INFO_ONLY=true; shift ;;
+    *)            POSITIONAL+=("$1"); shift ;;
+  esac
+done
+
+if [[ ${#POSITIONAL[@]} -eq 0 ]]; then
+  echo "ERROR: No PDF file provided" >&2
+  echo "Usage: ocr-prepare FILE.pdf [--submit] [--dpi N]" >&2
+  exit 1
+fi
+
+INPUT="${POSITIONAL[0]}"
+
+if [[ ! -f "$INPUT" ]]; then
+  echo "ERROR: File not found: $INPUT" >&2
+  exit 1
+fi
+
+# Info-only mode
+if [[ "$INFO_ONLY" == true ]]; then
+  show_info "$INPUT"
+  exit 0
+fi
+
+# Check for Ghostscript
+if ! command -v gs &>/dev/null; then
+  echo "ERROR: Ghostscript not found. Install with: brew install ghostscript" >&2
+  exit 1
+fi
+
+# Show info first
+show_info "$INPUT"
+echo ""
+
+# Build output path
+INPUT_DIR="$(cd "$(dirname "$INPUT")" && pwd)"
+INPUT_BASE="$(basename "$INPUT" .pdf)"
+OUTPUT="${INPUT_DIR}/${INPUT_BASE}_${TARGET_DPI}dpi.pdf"
+
+# Downscale
+downscale_gs "$INPUT" "$OUTPUT" "$TARGET_DPI" "$QUALITY"
+
+# Submit if requested
+if [[ "$SUBMIT" == true ]]; then
+  echo ""
+  SUBMIT_ARGS=()
+  if [[ "$INGEST" == true ]]; then
+    SUBMIT_ARGS+=("--ingest")
+  fi
+  SUBMIT_ARGS+=("$OUTPUT")
+
+  if [[ -x "$OCR_SUBMIT" ]]; then
+    "$OCR_SUBMIT" "${SUBMIT_ARGS[@]}"
+  else
+    echo "ERROR: ocr-submit not found at ${OCR_SUBMIT}" >&2
+    echo "Downscaled file saved at: $OUTPUT"
+    exit 1
+  fi
+else
+  echo ""
+  echo "Downscaled PDF ready: $OUTPUT"
+  echo ""
+  echo "Next steps:"
+  echo "  ./ocr-submit $OUTPUT              # Submit to Mac Mini for OCR"
+  echo "  ./ocr-submit --ingest $OUTPUT     # Submit + auto-ingest"
+fi

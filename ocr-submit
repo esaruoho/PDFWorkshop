@@ -236,8 +236,23 @@ fi
 
 TARGET="${POSITIONAL[0]}"
 
-# Detect if target is a local file
+# Auto-downscale large local PDFs (>100MB) before submitting
+DOWNSCALE_THRESHOLD=$((100 * 1024 * 1024))  # 100 MB
+PREPARE_SCRIPT="$(cd "$(dirname "$0")" && pwd)/ocr-prepare"
+
 if [[ -f "$TARGET" ]]; then
+  file_size="$(wc -c < "$TARGET" | tr -d ' ')"
+  if [[ "$file_size" -gt "$DOWNSCALE_THRESHOLD" ]] && command -v gs &>/dev/null && [[ -x "$PREPARE_SCRIPT" ]]; then
+    size_mb="$((file_size / 1024 / 1024))"
+    echo "Large PDF detected (${size_mb} MB). Downscaling to 200 DPI first..."
+    echo ""
+    downscaled="${TARGET%.pdf}_200dpi.pdf"
+    "$PREPARE_SCRIPT" "$TARGET" --dpi 200
+    echo ""
+    echo "Submitting downscaled version..."
+    TARGET="$downscaled"
+  fi
+
   if [[ "$LOCAL_MODE" == true ]]; then
     # Local file, local mode — use file:// URL
     TARGET="file://$(cd "$(dirname "$TARGET")" && pwd)/$(basename "$TARGET")"
