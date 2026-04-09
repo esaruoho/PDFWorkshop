@@ -111,7 +111,9 @@ download_pdf() {
   filename="$(basename "$url" | sed 's/[?#].*//')"
 
   # If no .pdf extension, add one
-  if [[ "${filename,,}" != *.pdf ]]; then
+  local filename_lower
+  filename_lower="$(echo "$filename" | tr '[:upper:]' '[:lower:]')"
+  if [[ "$filename_lower" != *.pdf ]]; then
     filename="${filename}.pdf"
   fi
 
