@@ -105,9 +105,12 @@ export default function Home() {
   }, []);
 
   // Auto-save to IndexedDB whenever pages change (debounced)
+  // Skip for large PDFs (>100MB) — base64 encoding would crash the tab
+  const AUTOSAVE_MAX_BYTES = 100 * 1024 * 1024;
   const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
     if (!pdfData || !pages.some((p) => p.ocrText)) return;
+    if (pdfData.byteLength > AUTOSAVE_MAX_BYTES) return;
     if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);
     autoSaveTimerRef.current = setTimeout(() => {
       saveState({
@@ -226,8 +229,9 @@ export default function Home() {
 
   // --- Load PDF from buffer ---
   const loadPdf = useCallback(async (buffer: ArrayBuffer, name: string) => {
-    const copy = buffer.slice(0);
-    const doc = await loadPdfDocument(buffer);
+    // Skip copy for large PDFs to avoid doubling memory usage
+    const copy = buffer.byteLength > 100 * 1024 * 1024 ? buffer : buffer.slice(0);
+    const doc = await loadPdfDocument(copy);
     setPdfDoc(doc);
     setPdfData(copy);
     setFileName(name);
@@ -877,6 +881,14 @@ export default function Home() {
   // --- Save project ---
   const handleSaveProject = useCallback(() => {
     if (!pdfData) return;
+    if (pdfData.byteLength > AUTOSAVE_MAX_BYTES) {
+      alert(
+        `This PDF is too large (${(pdfData.byteLength / 1024 / 1024).toFixed(0)} MB) to save as a .pdfws project.\n\n` +
+        `Use "Export TXT" to save the OCR text, or use the headless worker:\n` +
+        `  ./ocr-submit ${fileName}`
+      );
+      return;
+    }
     const project: ProjectFile = {
       version: 1,
       fileName,
