@@ -153,12 +153,13 @@ async function buildOcrPdf(pdfBytes, pages) {
 async function processPdf(pdfPath, outputDir) {
   const baseName = path.basename(pdfPath, ".pdf");
   const pdfBuffer = fs.readFileSync(pdfPath);
-  // Create a proper copy — Node Buffer's underlying ArrayBuffer can be shared/offset
-  const pdfData = Uint8Array.from(pdfBuffer);
+  // Keep a clean copy for pdf-lib (pdfjs may transfer/detach the ArrayBuffer)
+  const pdfDataForPdfjs = Uint8Array.from(pdfBuffer);
+  const pdfDataForPdfLib = Uint8Array.from(pdfBuffer);
 
   console.log(`\n--- ${baseName}.pdf ---`);
 
-  const doc = await getDocument({ data: pdfData, useSystemFonts: true }).promise;
+  const doc = await getDocument({ data: pdfDataForPdfjs, useSystemFonts: true }).promise;
   const numPages = doc.numPages;
   console.log(`  ${numPages} pages`);
 
@@ -193,7 +194,7 @@ async function processPdf(pdfPath, outputDir) {
 
   // Save OCR PDF
   const ocrPdfPath = path.join(outputDir, `${baseName}_ocr.pdf`);
-  const ocrPdfBytes = await buildOcrPdf(pdfData, pages);
+  const ocrPdfBytes = await buildOcrPdf(pdfDataForPdfLib, pages);
   fs.writeFileSync(ocrPdfPath, ocrPdfBytes);
   console.log(`  Saved: ${ocrPdfPath}`);
 
@@ -204,7 +205,7 @@ async function processPdf(pdfPath, outputDir) {
     totalPages: numPages,
     pages,
     ocrLanguages: ["eng"],
-    pdfBase64: arrayBufferToBase64(pdfData),
+    pdfBase64: arrayBufferToBase64(pdfBuffer),
     savedAt: new Date().toISOString(),
   };
   const projectPath = path.join(outputDir, `${baseName}.pdfws`);
