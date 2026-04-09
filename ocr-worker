@@ -87,6 +87,8 @@ parse_job() {
 }
 
 # --- Download PDF from URL ---
+# NOTE: This function returns the path on stdout. All log messages go to stderr
+# so they don't contaminate the captured return value from $().
 download_pdf() {
   local url="$1"
   local output_dir="$2"
@@ -101,7 +103,7 @@ download_pdf() {
       echo "${output_dir}/${basename}"
       return 0
     else
-      log "  ERROR: Local file not found: $local_path"
+      log "  ERROR: Local file not found: $local_path" >&2
       return 1
     fi
   fi
@@ -119,31 +121,22 @@ download_pdf() {
 
   local output_path="${output_dir}/${filename}"
 
-  log "  Downloading: ${url}"
-  if curl -fsSL --max-time 300 --retry 3 -o "$output_path" "$url" 2>/dev/null; then
+  log "  Downloading: ${url}" >&2
+  if curl -fsSL --max-time 300 --retry 3 -L -o "$output_path" "$url" 2>/dev/null; then
     # Verify it's actually a PDF (check magic bytes)
     local magic
     magic="$(head -c 5 "$output_path" 2>/dev/null || echo "")"
     if [[ "$magic" == "%PDF-" ]]; then
+      # Return path on stdout (only this line!)
       echo "$output_path"
       return 0
     else
-      log "  WARNING: Downloaded file is not a PDF (magic: ${magic})"
-      # It might be an HTML page with a PDF link — try to follow redirects
-      rm -f "$output_path"
-      if curl -fsSL --max-time 300 --retry 3 -L -o "$output_path" "$url" 2>/dev/null; then
-        magic="$(head -c 5 "$output_path" 2>/dev/null || echo "")"
-        if [[ "$magic" == "%PDF-" ]]; then
-          echo "$output_path"
-          return 0
-        fi
-      fi
-      log "  ERROR: Could not download a valid PDF"
+      log "  ERROR: Downloaded file is not a valid PDF (magic: ${magic})" >&2
       rm -f "$output_path"
       return 1
     fi
   else
-    log "  ERROR: Download failed"
+    log "  ERROR: Download failed" >&2
     return 1
   fi
 }
