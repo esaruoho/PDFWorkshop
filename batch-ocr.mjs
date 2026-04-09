@@ -13,6 +13,7 @@
 
 import fs from "fs";
 import path from "path";
+import { execSync } from "child_process";
 import { createCanvas } from "canvas";
 import { getDocument, GlobalWorkerOptions } from "pdfjs-dist/legacy/build/pdf.mjs";
 import { PDFDocument, rgb, StandardFonts } from "pdf-lib";
@@ -153,6 +154,38 @@ async function buildOcrPdf(pdfBytes, pages) {
 // Large PDF threshold: skip .pdfws (base64-embedded) for files over this size
 const LARGE_PDF_BYTES = 50 * 1024 * 1024; // 50 MB
 
+// Check if PyMuPDF is available for fallback rendering
+function hasPyMuPDF() {
+  try {
+    execSync('python3 -c "import fitz"', { stdio: "ignore" });
+    return true;
+  } catch {
+    try {
+      execSync('python3 -c "import pymupdf"', { stdio: "ignore" });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+}
+
+// Render pages to images using PyMuPDF (fallback when pdfjs canvas fails)
+function renderPagesWithPyMuPDF(pdfPath, tmpDir) {
+  const scriptPath = path.join(path.dirname(new URL(import.meta.url).pathname), "pdf-to-images.py");
+  const output = execSync(`python3 "${scriptPath}" "${pdfPath}" "${tmpDir}" --dpi 200`, {
+    encoding: "utf8",
+    maxBuffer: 10 * 1024 * 1024,
+  });
+  const lines = output.trim().split("\n");
+  const numPages = parseInt(lines[0], 10);
+  const pageImages = [];
+  for (let i = 1; i < lines.length; i++) {
+    const [pageNum, imgPath] = lines[i].split("|");
+    pageImages.push({ pageNum: parseInt(pageNum, 10), imgPath });
+  }
+  return { numPages, pageImages };
+}
+
 async function processPdf(pdfPath, outputDir) {
   const baseName = path.basename(pdfPath, ".pdf");
   const fileSize = fs.statSync(pdfPath).size;
@@ -164,20 +197,76 @@ async function processPdf(pdfPath, outputDir) {
     console.log(`\n--- ${baseName}.pdf ---`);
   }
 
-  // For pdfjs: read and copy (pdfjs may detach the ArrayBuffer)
-  const pdfBuffer = fs.readFileSync(pdfPath);
-  const pdfDataForPdfjs = Uint8Array.from(pdfBuffer);
+  // Try pdfjs first, fall back to PyMuPDF if canvas rendering fails
+  let numPages = 0;
+  let usePyMuPDF = false;
+  let pdfjsDoc = null;
+  const tmpImgDir = path.join(outputDir, "_page_images");
 
-  const doc = await getDocument({ data: pdfDataForPdfjs, useSystemFonts: true }).promise;
-  const numPages = doc.numPages;
-  console.log(`  ${numPages} pages`);
+  try {
+    const pdfBuffer = fs.readFileSync(pdfPath);
+    const pdfDataForPdfjs = Uint8Array.from(pdfBuffer);
+    pdfjsDoc = await getDocument({ data: pdfDataForPdfjs, useSystemFonts: true }).promise;
+    numPages = pdfjsDoc.numPages;
+    console.log(`  ${numPages} pages`);
+
+    // Test render page 1 to detect canvas issues early
+    await renderPageToBase64(pdfjsDoc, 1);
+  } catch (err) {
+    if (pdfjsDoc) { try { pdfjsDoc.destroy(); } catch {} }
+    pdfjsDoc = null;
+    console.log(`  pdfjs rendering failed: ${err.message.split("\n")[0]}`);
+
+    if (hasPyMuPDF()) {
+      console.log(`  Falling back to PyMuPDF for page rendering...`);
+      usePyMuPDF = true;
+      const result = renderPagesWithPyMuPDF(pdfPath, tmpImgDir);
+      numPages = result.numPages;
+      console.log(`  ${numPages} pages (via PyMuPDF)`);
+    } else {
+      console.error("  ERROR: PyMuPDF not available. Install: pip3 install pymupdf");
+      throw err;
+    }
+  }
 
   const pages = [];
   let backend = null;
 
   for (let i = 1; i <= numPages; i++) {
     process.stdout.write(`  Page ${i}/${numPages}...`);
-    const base64 = await renderPageToBase64(doc, i);
+
+    let base64;
+    if (usePyMuPDF) {
+      // Read the pre-rendered PNG from PyMuPDF
+      const imgPath = path.join(tmpImgDir, `page_${String(i).padStart(4, "0")}.png`);
+      if (fs.existsSync(imgPath)) {
+        base64 = fs.readFileSync(imgPath).toString("base64");
+      } else {
+        process.stdout.write(` MISSING IMAGE\n`);
+        pages.push({ pageNumber: i, ocrText: "", source: null, history: [] });
+        continue;
+      }
+    } else {
+      try {
+        base64 = await renderPageToBase64(pdfjsDoc, i);
+      } catch (err) {
+        // If pdfjs fails mid-way, switch to PyMuPDF for remaining pages
+        if (!usePyMuPDF && hasPyMuPDF()) {
+          console.log(`\n  pdfjs failed on page ${i}, switching to PyMuPDF...`);
+          if (pdfjsDoc) { try { pdfjsDoc.destroy(); } catch {} pdfjsDoc = null; }
+          usePyMuPDF = true;
+          renderPagesWithPyMuPDF(pdfPath, tmpImgDir);
+          const imgPath = path.join(tmpImgDir, `page_${String(i).padStart(4, "0")}.png`);
+          base64 = fs.existsSync(imgPath) ? fs.readFileSync(imgPath).toString("base64") : null;
+        }
+        if (!base64) {
+          process.stdout.write(` RENDER FAILED\n`);
+          pages.push({ pageNumber: i, ocrText: "", source: null, history: [] });
+          continue;
+        }
+      }
+    }
+
     const result = await ocrPage(base64);
 
     if (result) {
@@ -192,16 +281,16 @@ async function processPdf(pdfPath, outputDir) {
       });
     } else {
       process.stdout.write(` FAILED\n`);
-      pages.push({
-        pageNumber: i,
-        ocrText: "",
-        source: null,
-        history: [],
-      });
+      pages.push({ pageNumber: i, ocrText: "", source: null, history: [] });
     }
   }
 
-  doc.destroy();
+  if (pdfjsDoc) pdfjsDoc.destroy();
+
+  // Clean up temp images
+  if (fs.existsSync(tmpImgDir)) {
+    fs.rmSync(tmpImgDir, { recursive: true, force: true });
+  }
 
   // Save OCR PDF (re-read the file fresh for pdf-lib — avoids detached buffer)
   const ocrPdfPath = path.join(outputDir, `${baseName}_ocr.pdf`);
