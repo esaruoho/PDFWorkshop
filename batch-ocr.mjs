@@ -154,14 +154,17 @@ async function buildOcrPdf(pdfBytes, pages) {
 // Large PDF threshold: skip .pdfws (base64-embedded) for files over this size
 const LARGE_PDF_BYTES = 50 * 1024 * 1024; // 50 MB
 
+// execSync with proper PATH (nohup workers may lack /usr/bin in PATH)
+const EXEC_OPTS = { env: { ...process.env, PATH: `/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin:${process.env.PATH || ""}` } };
+
 // Check if PyMuPDF is available for fallback rendering
 function hasPyMuPDF() {
   try {
-    execSync('python3 -c "import fitz"', { stdio: "ignore" });
+    execSync('python3 -c "import fitz"', { ...EXEC_OPTS, stdio: "ignore" });
     return true;
   } catch {
     try {
-      execSync('python3 -c "import pymupdf"', { stdio: "ignore" });
+      execSync('python3 -c "import pymupdf"', { ...EXEC_OPTS, stdio: "ignore" });
       return true;
     } catch {
       return false;
@@ -173,6 +176,7 @@ function hasPyMuPDF() {
 function renderPagesWithPyMuPDF(pdfPath, tmpDir) {
   const scriptPath = path.join(path.dirname(new URL(import.meta.url).pathname), "pdf-to-images.py");
   const output = execSync(`python3 "${scriptPath}" "${pdfPath}" "${tmpDir}" --dpi 200`, {
+    ...EXEC_OPTS,
     encoding: "utf8",
     maxBuffer: 10 * 1024 * 1024,
   });
