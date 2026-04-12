@@ -24,12 +24,14 @@ ocr-submit — Submit URLs for headless OCR on CloudcityMacMini
 Usage:
   ocr-submit URL                     Submit PDF URL for OCR on Mac Mini
   ocr-submit FILE                    Submit local PDF (SCP + OCR)
+  ocr-submit --scrape URL            Scrape page for PDF links, submit all
   ocr-submit --local URL             Submit locally (when running ON Mac Mini)
   ocr-submit status                  Show queue status (pending/processing/done)
   ocr-submit -h, --help              Show this help
 
 Options:
   --local         Run locally instead of SSH to Mac Mini
+  --scrape        Scrape an HTML page for PDF links and batch-submit all
   --engine ENG    OCR engine: glm (default), gemini, tesseract
   --priority P    Priority: normal (default), high
   --ingest        Auto-ingest results via fe-ingest.sh after OCR
@@ -39,6 +41,7 @@ Examples:
   ocr-submit ~/Downloads/scanned-paper.pdf
   ocr-submit --engine gemini https://example.com/report.pdf
   ocr-submit --ingest https://infinite-energy.com/images/pdfs/IE157-Storms.pdf
+  ocr-submit --scrape https://www.rosicrucian.org/rosicrucian-digest-archive-1930s
   ocr-submit status
 EOF
   exit 0
@@ -210,16 +213,76 @@ show_status() {
   echo "Failed:     $(ls "${base}/failed/"*.job 2>/dev/null | wc -l | tr -d ' ')"
 }
 
+# --- Scrape mode: fetch an HTML page, extract PDF links, submit each one ---
+scrape_and_submit() {
+  local page_url="$1"
+  local engine="$2"
+  local priority="$3"
+  local ingest="$4"
+
+  echo "Scraping ${page_url} for PDF links..."
+  echo ""
+
+  # Fetch the page and extract all href URLs ending in .pdf (case-insensitive)
+  local pdf_urls
+  pdf_urls="$(curl -sL --compressed --max-time 60 "$page_url" \
+    | grep -oiE 'href="[^"]*\.pdf[^"]*"' \
+    | sed -E 's/href="([^"]*)"/\1/i' \
+    | sort -u)"
+
+  if [[ -z "$pdf_urls" ]]; then
+    echo "No PDF links found on ${page_url}" >&2
+    exit 1
+  fi
+
+  local count
+  count="$(echo "$pdf_urls" | wc -l | tr -d ' ')"
+  echo "Found ${count} PDF(s). Submitting..."
+  echo ""
+
+  local submitted=0
+  while IFS= read -r pdf_url; do
+    [[ -z "$pdf_url" ]] && continue
+
+    # Resolve relative URLs
+    if [[ "$pdf_url" != http* ]]; then
+      # Get base URL (scheme + host)
+      local base
+      base="$(echo "$page_url" | sed -E 's|(https?://[^/]+).*|\1|')"
+      if [[ "$pdf_url" == /* ]]; then
+        pdf_url="${base}${pdf_url}"
+      else
+        # relative to page directory
+        local dir
+        dir="$(echo "$page_url" | sed -E 's|/[^/]*$|/|')"
+        pdf_url="${dir}${pdf_url}"
+      fi
+    fi
+
+    if [[ "$LOCAL_MODE" == true ]]; then
+      submit_local "$pdf_url" "$engine" "$priority" "$ingest"
+    else
+      submit_remote "$pdf_url" "$engine" "$priority" "$ingest"
+    fi
+    submitted=$((submitted + 1))
+  done <<< "$pdf_urls"
+
+  echo ""
+  echo "Done. Submitted ${submitted} OCR job(s)."
+}
+
 # --- Parse arguments ---
 ENGINE="glm"
 PRIORITY="normal"
 INGEST="false"
+SCRAPE_MODE=false
 POSITIONAL=()
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -h|--help)     usage ;;
     --local)       LOCAL_MODE=true; shift ;;
+    --scrape)      SCRAPE_MODE=true; shift ;;
     --engine)      ENGINE="$2"; shift 2 ;;
     --priority)    PRIORITY="$2"; shift 2 ;;
     --ingest)      INGEST="true"; shift ;;
@@ -235,6 +298,12 @@ if [[ ${#POSITIONAL[@]} -eq 0 ]]; then
 fi
 
 TARGET="${POSITIONAL[0]}"
+
+# If --scrape flag is set, scrape the page and batch-submit
+if [[ "$SCRAPE_MODE" == true ]]; then
+  scrape_and_submit "$TARGET" "$ENGINE" "$PRIORITY" "$INGEST"
+  exit 0
+fi
 
 # Auto-downscale large local PDFs (>100MB) before submitting
 DOWNSCALE_THRESHOLD=$((100 * 1024 * 1024))  # 100 MB
