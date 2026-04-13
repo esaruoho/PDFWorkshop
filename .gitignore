@@ -59,3 +59,4 @@ queue/.work_*
 .idea/
 *.swp
 *.swo
+queue/priority/*.job

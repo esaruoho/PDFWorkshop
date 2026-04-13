@@ -17,13 +17,27 @@ export PATH="/opt/homebrew/bin:$PATH"
 
 REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
 PENDING_DIR="$REPO_DIR/queue/pending"
+PRIORITY_DIR="$REPO_DIR/queue/priority"
 PROCESSING_DIR="$REPO_DIR/queue/processing"
 DONE_DIR="$REPO_DIR/queue/done"
 FAILED_DIR="$REPO_DIR/queue/failed"
 UPLOADS_DIR="$REPO_DIR/queue/uploads"
 RESULTS_DIR="${HOME}/work/comms/queue/ocr-results"
 INBOX_DIR="${HOME}/work/comms/queue/ocr-inbox"
+HEARTBEAT_FILE="${HOME}/work/comms/queue/ocr-heartbeat.json"
 OCR_SCRIPT="$REPO_DIR/batch-ocr.mjs"
+
+# Off-network visibility — write a JSON heartbeat so the local Mac can tell
+# whether we're idle, starting a job, or finished, via Syncthing.
+# batch-ocr.mjs overwrites this with per-page progress while a job is running.
+heartbeat() {
+  local status="$1"
+  local detail="${2:-}"
+  local ts
+  ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  printf '{\n  "ts": "%s",\n  "status": "%s",\n  "detail": "%s",\n  "worker_pid": %s\n}\n' \
+    "$ts" "$status" "$detail" "$$" > "$HEARTBEAT_FILE" 2>/dev/null || true
+}
 
 POLL_IDLE=120    # seconds between checks when queue is empty
 POLL_ACTIVE=10   # seconds between jobs
@@ -65,7 +79,7 @@ check_self_update() {
 }
 
 # --- Ensure directories exist ---
-mkdir -p "$PENDING_DIR" "$PROCESSING_DIR" "$DONE_DIR" "$FAILED_DIR" "$UPLOADS_DIR" "$RESULTS_DIR" "$INBOX_DIR"
+mkdir -p "$PRIORITY_DIR" "$PENDING_DIR" "$PROCESSING_DIR" "$DONE_DIR" "$FAILED_DIR" "$UPLOADS_DIR" "$RESULTS_DIR" "$INBOX_DIR"
 
 # --- Recovery: move stuck processing jobs back to pending ---
 recover_stuck() {
@@ -287,6 +301,8 @@ fi
 recover_stuck
 WORKER_HASH="$(get_worker_hash)"
 
+heartbeat "starting" "worker boot, backend=${backend}"
+
 while true; do
   # --- Scan inbox for dropped PDFs (Syncthing drop folder) ---
   for inbox_pdf in "$INBOX_DIR"/*.pdf "$INBOX_DIR"/*.PDF; do
@@ -306,9 +322,7 @@ while true; do
 
     # Move to uploads and create a job
     mv "$inbox_pdf" "$UPLOADS_DIR/" 2>/dev/null || continue
-    local ts
     ts="$(date +%s)"
-    local safe_name
     safe_name="$(echo "$local_basename" | sed -E 's/[^a-zA-Z0-9._-]/_/g')"
     cat > "$PENDING_DIR/${ts}_${safe_name}.job" <<JOEOF
 target: file://${UPLOADS_DIR}/${local_basename}
@@ -322,11 +336,17 @@ JOEOF
   done
 
   # Find oldest pending job (FIFO)
-  local_job="$(ls -t "$PENDING_DIR"/*.job 2>/dev/null | tail -1 || true)"
+  # Priority dir is checked first (LIFO for priority: newest bumped wins)
+  local_job="$(ls -t "$PRIORITY_DIR"/*.job 2>/dev/null | head -1 || true)"
+  if [[ -z "$local_job" ]]; then
+    local_job="$(ls -t "$PENDING_DIR"/*.job 2>/dev/null | tail -1 || true)"
+  fi
 
   if [[ -n "$local_job" ]]; then
+    heartbeat "starting_job" "$(basename "$local_job" .job)"
     process_job "$local_job" || true
     check_self_update
+    heartbeat "between_jobs" "last=$(basename "$local_job" .job)"
 
     if [[ "$RUN_ONCE" == true ]]; then
       log "Single-run mode — exiting."
@@ -341,6 +361,7 @@ JOEOF
       exit 0
     fi
 
+    heartbeat "idle" "queue empty, polling ${POLL_IDLE}s"
     idle "Queue empty — sleeping ${POLL_IDLE}s..."
     sleep "$POLL_IDLE" &
     wait $! 2>/dev/null || true   # USR1 interrupts sleep

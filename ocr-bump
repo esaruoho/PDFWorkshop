@@ -1,0 +1,66 @@
+#!/opt/homebrew/bin/bash
+# ocr-bump — Move matching pending jobs to queue/priority/ so the worker picks them next.
+#
+# Usage:
+#   ./ocr-bump <pattern>           # substring match (case-insensitive) in pending filenames
+#   ./ocr-bump --list              # list current priority queue
+#   ./ocr-bump --unbump <pattern>  # move priority job back to pending
+
+set -euo pipefail
+cd "$(dirname "$0")"
+PENDING_DIR="queue/pending"
+PRIORITY_DIR="queue/priority"
+mkdir -p "$PRIORITY_DIR"
+
+if [[ $# -eq 0 ]]; then
+  echo "Usage: ocr-bump <pattern> | --list | --unbump <pattern>" >&2
+  exit 1
+fi
+
+if [[ "$1" == "--list" ]]; then
+  echo "Priority queue ($(ls "$PRIORITY_DIR"/*.job 2>/dev/null | wc -l | tr -d ' ') jobs, processed newest-first):"
+  ls -t "$PRIORITY_DIR"/*.job 2>/dev/null | while read -r f; do
+    echo "  $(basename "$f")"
+  done
+  exit 0
+fi
+
+SRC_DIR="$PENDING_DIR"
+DST_DIR="$PRIORITY_DIR"
+ACTION="Bumped"
+if [[ "$1" == "--unbump" ]]; then
+  shift
+  SRC_DIR="$PRIORITY_DIR"
+  DST_DIR="$PENDING_DIR"
+  ACTION="Unbumped"
+fi
+
+pattern="$1"
+shopt -s nocasematch
+matches=()
+for f in "$SRC_DIR"/*.job; do
+  [[ -f "$f" ]] || continue
+  name="$(basename "$f")"
+  if [[ "$name" == *"$pattern"* ]]; then
+    matches+=("$f")
+  fi
+done
+shopt -u nocasematch
+
+if [[ ${#matches[@]} -eq 0 ]]; then
+  echo "No match for '$pattern' in $SRC_DIR" >&2
+  exit 2
+fi
+
+echo "$ACTION ${#matches[@]} job(s):"
+for f in "${matches[@]}"; do
+  # Touch to ensure priority ordering is intuitive: most-recently-bumped runs first (newest mtime wins)
+  touch "$f"
+  mv "$f" "$DST_DIR/"
+  echo "  $(basename "$f")"
+done
+
+# Poke worker via USR1 to wake it up immediately
+if [[ -f .ocr-worker.pid ]]; then
+  kill -USR1 "$(cat .ocr-worker.pid)" 2>/dev/null || true
+fi
