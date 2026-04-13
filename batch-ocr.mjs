@@ -30,6 +30,18 @@ const MLX_URL = "http://localhost:8080/chat/completions";
 const OLLAMA_URL = "http://localhost:11434/api/generate";
 const OCR_PROMPT =
   "OCR this image. Extract ALL text preserving the original formatting, paragraphs, tables, and formulas. Output only the extracted text.";
+const HEARTBEAT_PATH = path.join(
+  process.env.HOME || "/Users/esaruoho",
+  "work/comms/queue/ocr-heartbeat.json",
+);
+
+function writeHeartbeat(state) {
+  try {
+    fs.writeFileSync(HEARTBEAT_PATH, JSON.stringify(state, null, 2) + "\n");
+  } catch {
+    // Heartbeat is best-effort; never fail a job because of it
+  }
+}
 
 // --- Helpers ---
 function arrayBufferToBase64(buffer) {
@@ -201,6 +213,7 @@ async function processPdf(pdfPath, outputDir) {
   const baseName = path.basename(pdfPath, ".pdf");
   const fileSize = fs.statSync(pdfPath).size;
   const isLarge = fileSize > LARGE_PDF_BYTES;
+  const startedAt = new Date();
 
   if (isLarge) {
     console.log(`\n--- ${baseName}.pdf --- (${(fileSize / 1024 / 1024).toFixed(0)} MB — large PDF mode)`);
@@ -208,14 +221,26 @@ async function processPdf(pdfPath, outputDir) {
     console.log(`\n--- ${baseName}.pdf ---`);
   }
 
+  // Initial heartbeat so watchers know we've picked up this file
+  writeHeartbeat({
+    ts: new Date().toISOString(),
+    status: "rendering",
+    current_job: `${baseName}.pdf`,
+    file_size_bytes: fileSize,
+    current_page: 0,
+    total_pages: 0,
+    backend: null,
+    started_at: startedAt.toISOString(),
+  });
+
   // Try pdfjs first, fall back to PyMuPDF if canvas rendering fails
   let numPages = 0;
   let usePyMuPDF = false;
   let pdfjsDoc = null;
   const tmpImgDir = path.join(outputDir, "_page_images");
+  const pdfBuffer = fs.readFileSync(pdfPath);
 
   try {
-    const pdfBuffer = fs.readFileSync(pdfPath);
     const pdfDataForPdfjs = Uint8Array.from(pdfBuffer);
     pdfjsDoc = await getDocument({ data: pdfDataForPdfjs, useSystemFonts: true }).promise;
     numPages = pdfjsDoc.numPages;
@@ -294,6 +319,24 @@ async function processPdf(pdfPath, outputDir) {
       process.stdout.write(` FAILED\n`);
       pages.push({ pageNumber: i, ocrText: "", source: null, history: [] });
     }
+
+    // Per-page heartbeat for off-network visibility (survives Syncthing)
+    const charsSoFar = pages.reduce((sum, p) => sum + (p.ocrText?.length || 0), 0);
+    const elapsedMs = Date.now() - startedAt.getTime();
+    const etaMs = i > 0 ? Math.round((elapsedMs / i) * (numPages - i)) : null;
+    writeHeartbeat({
+      ts: new Date().toISOString(),
+      status: "processing",
+      current_job: `${baseName}.pdf`,
+      file_size_bytes: fileSize,
+      current_page: i,
+      total_pages: numPages,
+      backend: backend || "unknown",
+      started_at: startedAt.toISOString(),
+      elapsed_ms: elapsedMs,
+      eta_ms: etaMs,
+      chars_total: charsSoFar,
+    });
   }
 
   if (pdfjsDoc) pdfjsDoc.destroy();
