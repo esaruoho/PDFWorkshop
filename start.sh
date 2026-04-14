@@ -99,10 +99,29 @@ start_mlx() {
   if [ ! -d ".venv-mlx" ]; then
     echo ""
     echo "===== Setting up GLM-OCR MLX environment (first run only) ====="
-    python3.12 -m venv .venv-mlx
+
+    # Find Python 3.12 (prefer brew, fall back to PATH, else bootstrap via brew)
+    local py312=""
+    for cand in /opt/homebrew/bin/python3.12 /usr/local/bin/python3.12 python3.12; do
+      if command -v "$cand" >/dev/null 2>&1; then py312="$cand"; break; fi
+    done
+    if [ -z "$py312" ]; then
+      if command -v brew >/dev/null 2>&1; then
+        echo "Installing python@3.12 via Homebrew..."
+        brew install python@3.12
+        py312=/opt/homebrew/bin/python3.12
+      else
+        echo "ERROR: python3.12 not found. Install Homebrew or Python 3.12 first."
+        return
+      fi
+    fi
+
+    "$py312" -m venv .venv-mlx
     .venv-mlx/bin/pip install --upgrade pip -q
-    echo "Installing mlx-vlm (this takes a few minutes)..."
-    .venv-mlx/bin/pip install "git+https://github.com/Blaizzy/mlx-vlm.git"
+    echo "Installing mlx-vlm + torch (this takes a few minutes)..."
+    # torch + torchvision are required: GlmOcrProcessor uses AutoImageProcessor
+    # which falls back silently to a text-only tokenizer without them, producing empty OCR output.
+    .venv-mlx/bin/pip install "git+https://github.com/Blaizzy/mlx-vlm.git" torch torchvision
     echo "===== GLM-OCR MLX environment ready ====="
     echo ""
   fi

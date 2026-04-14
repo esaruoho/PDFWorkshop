@@ -46,29 +46,86 @@ if [[ ! -d node_modules ]]; then
   echo ""
 fi
 
-# Check for GLM-OCR backend
+# --- GLM-OCR backend detection + auto-bootstrap ---
 check_backend() {
   if curl -sf --max-time 3 "http://localhost:8080/v1/models" >/dev/null 2>&1; then
-    echo "MLX (:8080)"
-    return 0
+    echo "MLX (:8080)"; return 0
   fi
-
   if curl -sf --max-time 3 "http://localhost:11434/api/tags" 2>/dev/null | grep -q "glm-ocr"; then
-    echo "Ollama (:11434)"
-    return 0
+    echo "Ollama (:11434)"; return 0
+  fi
+  echo "NONE"; return 1
+}
+
+# On Apple Silicon, auto-start MLX server if not already running.
+# MLX with GLM-OCR is ~2× faster than Ollama and uses the Neural Engine.
+is_apple_silicon() {
+  [[ "$(uname -m)" == "arm64" && "$(uname)" == "Darwin" ]]
+}
+
+bootstrap_mlx_venv() {
+  if [[ -d .venv-mlx ]]; then return 0; fi
+
+  echo "Bootstrapping MLX venv (first run)..."
+  local py312=""
+  for cand in /opt/homebrew/bin/python3.12 /usr/local/bin/python3.12 python3.12; do
+    if command -v "$cand" >/dev/null 2>&1; then py312="$cand"; break; fi
+  done
+  if [[ -z "$py312" ]]; then
+    if command -v brew >/dev/null 2>&1; then
+      echo "  Installing python@3.12 via Homebrew..."
+      brew install python@3.12
+      py312=/opt/homebrew/bin/python3.12
+    else
+      echo "  ERROR: python3.12 + Homebrew missing; cannot bootstrap MLX."
+      return 1
+    fi
   fi
 
-  echo "NONE"
+  "$py312" -m venv .venv-mlx
+  .venv-mlx/bin/pip install --upgrade pip -q
+  echo "  Installing mlx-vlm + torch (few minutes)..."
+  # torch + torchvision required — GlmOcrProcessor uses AutoImageProcessor
+  # which silently returns a text-only tokenizer without them (empty OCR output).
+  .venv-mlx/bin/pip install "git+https://github.com/Blaizzy/mlx-vlm.git" torch torchvision -q
+  echo "  MLX venv ready."
+}
+
+start_mlx_server() {
+  local log=/tmp/pdfworkshop-mlx.log
+  nohup .venv-mlx/bin/python -m mlx_vlm.server \
+    --trust-remote-code --port 8080 > "$log" 2>&1 &
+  disown
+  echo "MLX server launched (log: $log). Waiting for readiness..."
+  local tries=0
+  while (( tries < 60 )); do
+    if curl -sf --max-time 2 http://localhost:8080/v1/models >/dev/null 2>&1; then
+      echo "MLX server ready on :8080"
+      return 0
+    fi
+    sleep 1
+    tries=$((tries + 1))
+  done
+  echo "WARNING: MLX server did not come up within 60s (check $log)"
   return 1
 }
 
 backend="$(check_backend || true)"
+
+if [[ "$backend" == "NONE" ]] && is_apple_silicon; then
+  echo "No backend running — attempting MLX bootstrap (Apple Silicon detected)..."
+  if bootstrap_mlx_venv; then
+    start_mlx_server || true
+    backend="$(check_backend || true)"
+  fi
+fi
+
 echo "OCR Backend: ${backend}"
 
 if [[ "$backend" == "NONE" ]]; then
   echo ""
   echo "WARNING: No GLM-OCR backend detected."
-  echo "  MLX:    mlx_lm.server --model mlx-community/GLM-OCR-bf16 --port 8080"
+  echo "  MLX:    ./start-mlx-server.sh   (Apple Silicon only — fastest)"
   echo "  Ollama: ollama pull glm-ocr:latest && ollama serve"
   echo ""
   echo "Worker will start but jobs will fail until a backend is available."
