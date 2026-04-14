@@ -93,6 +93,11 @@ fi
 # 3. Start GLM-OCR MLX in background (Apple Silicon only)
 # ==========================================
 start_mlx() {
+  # MLX auto-start disabled 2026-04-14: mlx-vlm 0.4.4's chat/completions sampler
+  # does not honor repetition_penalty on GLM-OCR, producing 32k-char repetition
+  # loops on prose pages. Ollama's llama.cpp sampler works correctly.
+  # Set USE_MLX=1 to opt in manually once upstream fixes the sampler.
+  if [ "${USE_MLX:-0}" != "1" ]; then return; fi
   if [ "$IS_APPLE_SILICON" != "true" ]; then return; fi
 
   # Set up MLX venv if not present

@@ -112,21 +112,20 @@ start_mlx_server() {
 
 backend="$(check_backend || true)"
 
-if [[ "$backend" == "NONE" ]] && is_apple_silicon; then
-  echo "No backend running — attempting MLX bootstrap (Apple Silicon detected)..."
-  if bootstrap_mlx_venv; then
-    start_mlx_server || true
-    backend="$(check_backend || true)"
-  fi
-fi
+# NOTE: MLX auto-start was removed 2026-04-14 after discovering that mlx-vlm
+# 0.4.4's chat/completions sampler does not honor repetition_penalty on GLM-OCR,
+# causing catastrophic repetition loops on prose pages (32k-char garbage output).
+# The bootstrap_mlx_venv and start_mlx_server functions above remain for manual
+# use once upstream fixes the sampler bug (Blaizzy/mlx-vlm). Ollama's llama.cpp
+# sampler works correctly and is the recommended backend.
 
 echo "OCR Backend: ${backend}"
 
 if [[ "$backend" == "NONE" ]]; then
   echo ""
   echo "WARNING: No GLM-OCR backend detected."
-  echo "  MLX:    ./start-mlx-server.sh   (Apple Silicon only — fastest)"
-  echo "  Ollama: ollama pull glm-ocr:latest && ollama serve"
+  echo "  Ollama (recommended): ollama pull glm-ocr:latest && ollama serve"
+  echo "  MLX (experimental, has known repetition bug): ./start-mlx-server.sh"
   echo ""
   echo "Worker will start but jobs will fail until a backend is available."
 fi
