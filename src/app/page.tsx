@@ -110,6 +110,7 @@ export default function Home() {
   const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
     if (!pdfData || !pages.some((p) => p.ocrText)) return;
+    if (pdfData.byteLength === 0) return; // detached buffer — nothing to save
     if (pdfData.byteLength > AUTOSAVE_MAX_BYTES) return;
     if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);
     autoSaveTimerRef.current = setTimeout(() => {
@@ -229,11 +230,12 @@ export default function Home() {
 
   // --- Load PDF from buffer ---
   const loadPdf = useCallback(async (buffer: ArrayBuffer, name: string) => {
-    // Skip copy for large PDFs to avoid doubling memory usage
-    const copy = buffer.byteLength > 100 * 1024 * 1024 ? buffer : buffer.slice(0);
-    const doc = await loadPdfDocument(copy);
+    // pdf.js transfers (detaches) the buffer it receives, so always hand it
+    // a separate copy and keep `buffer` itself in state for autosave.
+    const forPdfJs = buffer.slice(0);
+    const doc = await loadPdfDocument(forPdfJs);
     setPdfDoc(doc);
-    setPdfData(copy);
+    setPdfData(buffer);
     setFileName(name);
     setTotalPages(doc.numPages);
     setCurrentPage(1);
