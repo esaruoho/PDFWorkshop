@@ -223,10 +223,12 @@ process_job() {
   local output_dir="${work_dir}/output"
   mkdir -p "$output_dir"
 
-  # Run OCR
+  # Run OCR — capture full stdout+stderr to a per-job log so failures are
+  # diagnosable after the fact (not just "error: ocr_failed").
   log "  Running OCR (engine: ${engine})..."
+  local ocr_log="${work_dir}/ocr-output.log"
   local ocr_exit=0
-  if ! node "$OCR_SCRIPT" "$pdf_path" --output "$output_dir" 2>&1 | while IFS= read -r line; do
+  if ! node "$OCR_SCRIPT" "$pdf_path" --output "$output_dir" 2>&1 | tee "$ocr_log" | while IFS= read -r line; do
     echo "  [ocr] $line"
   done; then
     ocr_exit=1
@@ -237,10 +239,17 @@ process_job() {
   result_count="$(ls "$output_dir"/*_ocr.pdf "$output_dir"/*.txt 2>/dev/null | wc -l | tr -d ' ')"
 
   if [[ "$result_count" -eq 0 ]]; then
-    log "  FAILED: No OCR output produced"
+    log "  FAILED: No OCR output produced (exit=${ocr_exit})"
     echo "error: ocr_failed" >> "$proc_job"
+    echo "ocr_exit: ${ocr_exit}" >> "$proc_job"
+    # Preserve OCR log alongside the failed job for post-mortem
+    if [[ -f "$ocr_log" ]]; then
+      cp "$ocr_log" "${FAILED_DIR}/$(basename "$proc_job" .job).ocr.log" 2>/dev/null || true
+    fi
     mv "$proc_job" "$FAILED_DIR/"
     rm -rf "$work_dir"
+    # NOTE: source PDF in $UPLOADS_DIR is intentionally kept on failure so the
+    # job can be retried by moving the .job from failed/ back to pending/.
     return 1
   fi
 
@@ -266,9 +275,22 @@ EOF
   # Cleanup working directory
   rm -rf "$work_dir"
 
+  # Cleanup the source PDF in uploads/ for file:// targets so the dir doesn't
+  # accumulate. Only delete if the file is inside our UPLOADS_DIR — never
+  # touch arbitrary paths a remote target= might point to.
+  if [[ "$target" == file://* ]]; then
+    local source_path="${target#file://}"
+    if [[ "$source_path" == "$UPLOADS_DIR/"* && -f "$source_path" ]]; then
+      rm -f "$source_path"
+      log "  Cleaned up source PDF: $(basename "$source_path")"
+    fi
+  fi
+
   # If ingest requested, trigger fe-ingest.sh on the result
   if [[ "$ingest" == "true" ]]; then
-    local fe_ingest="${HOME}/.claude/skills/free-energy/bin/fe-ingest.sh"
+    local base_name fe_ingest
+    base_name="$(basename "$pdf_path" .pdf)"
+    fe_ingest="${HOME}/.claude/skills/free-energy/bin/fe-ingest.sh"
     if [[ -x "$fe_ingest" ]]; then
       log "  Auto-ingesting via fe-ingest.sh..."
       "$fe_ingest" "$RESULTS_DIR/${base_name}_ocr.pdf" 2>&1 | while IFS= read -r line; do
