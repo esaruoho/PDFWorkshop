@@ -124,7 +124,12 @@ async function ocrPage(base64Data) {
 }
 
 async function buildOcrPdf(pdfBytes, pages) {
-  const srcDoc = await PDFDocument.load(pdfBytes);
+  // ignoreEncryption: true — handle PDFs with owner-password permission flags
+  // (e.g. Internet Archive scans with R=3 P=-3904 DRM). Without this flag,
+  // pdf-lib throws EncryptedPDFError on the load step even when no password
+  // is required, destroying the in-memory OCR'd pages array. See ocr-worker
+  // for the qpdf --decrypt pre-flight that complements this guard.
+  const srcDoc = await PDFDocument.load(pdfBytes, { ignoreEncryption: true });
   const exportDoc = await PDFDocument.create();
   const font = await exportDoc.embedFont(StandardFonts.Helvetica);
 
@@ -346,14 +351,27 @@ async function processPdf(pdfPath, outputDir) {
     fs.rmSync(tmpImgDir, { recursive: true, force: true });
   }
 
-  // Save OCR PDF (re-read the file fresh for pdf-lib — avoids detached buffer)
-  const ocrPdfPath = path.join(outputDir, `${baseName}_ocr.pdf`);
-  const freshPdfBytes = Uint8Array.from(fs.readFileSync(pdfPath));
-  const ocrPdfBytes = await buildOcrPdf(freshPdfBytes, pages);
-  fs.writeFileSync(ocrPdfPath, ocrPdfBytes);
-  console.log(`  Saved: ${ocrPdfPath}`);
+  // ───── ORDER OF SAVES IS LOAD-BEARING ─────
+  // Save .txt FIRST. The OCR'd pages array lives in process memory only
+  // until written to disk; if the OCR-PDF assembly step (pdf-lib) throws
+  // — for example on encrypted source PDFs — the entire processPdf()
+  // function unwinds and the pages array is garbage-collected. Writing
+  // .txt first guarantees we never lose hours of OCR work to a failure
+  // in the cosmetic last-mile PDF assembly.
+  // History: 2026-05-01 Wiley 1939 + Dover 1959 OCR runs (664 + 270 pages,
+  // ~3.5h + ~1h) were destroyed by EncryptedPDFError at the buildOcrPdf
+  // step despite every page having OCR'd successfully. The .txt-first
+  // reorder + buildOcrPdf ignoreEncryption: true together prevent recurrence.
 
-  // Save .pdfws project (skip for large PDFs — base64 embedding would be too big)
+  // 1) Always save plain text extract — never depends on pdf-lib succeeding
+  const txtPath = path.join(outputDir, `${baseName}.txt`);
+  const txt = pages
+    .map((pg) => `=== Page ${pg.pageNumber} ===\n${pg.ocrText || ""}`)
+    .join("\n\n");
+  fs.writeFileSync(txtPath, txt);
+  console.log(`  Saved: ${txtPath}`);
+
+  // 2) Save .pdfws project (skip for large PDFs — base64 embedding would be too big)
   if (!isLarge) {
     const project = {
       version: 1,
@@ -371,13 +389,20 @@ async function processPdf(pdfPath, outputDir) {
     console.log(`  Skipped .pdfws (file too large for base64 embedding)`);
   }
 
-  // Always save plain text extract
-  const txtPath = path.join(outputDir, `${baseName}.txt`);
-  const txt = pages
-    .map((pg) => `=== Page ${pg.pageNumber} ===\n${pg.ocrText || ""}`)
-    .join("\n\n");
-  fs.writeFileSync(txtPath, txt);
-  console.log(`  Saved: ${txtPath}`);
+  // 3) Save OCR PDF (re-read the file fresh for pdf-lib — avoids detached buffer)
+  // If this step throws (e.g. encryption, malformed PDF), .txt and .pdfws
+  // are already on disk so the OCR work is preserved and the failure is
+  // recoverable by re-assembling the PDF from the .pdfws project.
+  try {
+    const ocrPdfPath = path.join(outputDir, `${baseName}_ocr.pdf`);
+    const freshPdfBytes = Uint8Array.from(fs.readFileSync(pdfPath));
+    const ocrPdfBytes = await buildOcrPdf(freshPdfBytes, pages);
+    fs.writeFileSync(ocrPdfPath, ocrPdfBytes);
+    console.log(`  Saved: ${ocrPdfPath}`);
+  } catch (err) {
+    console.warn(`  WARNING: OCR-PDF assembly failed: ${err.message.split("\n")[0]}`);
+    console.warn(`  .txt and .pdfws were saved successfully; _ocr.pdf can be re-assembled later.`);
+  }
 }
 
 async function main() {

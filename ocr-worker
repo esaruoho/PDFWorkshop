@@ -219,6 +219,26 @@ process_job() {
 
   log "  PDF: $(basename "$pdf_path")"
 
+  # Pre-flight: strip permission-flag DRM if present.
+  # Some scans (Internet Archive, library digitizations) ship with R=3 P=-3904
+  # owner-password DRM that has an empty user password but blocks pdf-lib's
+  # PDFDocument.load(). batch-ocr.mjs has ignoreEncryption: true as a backstop,
+  # but pre-decrypting here is defense in depth and produces a cleaner artifact.
+  # qpdf is in the homebrew PATH (set above); silently no-op if not installed.
+  if command -v qpdf >/dev/null 2>&1; then
+    if qpdf --show-encryption "$pdf_path" 2>&1 | grep -q "^R = "; then
+      log "  Pre-flight: encrypted PDF detected, stripping DRM with qpdf --decrypt"
+      local decrypted_path="${pdf_path%.pdf}.decrypted.pdf"
+      if qpdf --decrypt "$pdf_path" "$decrypted_path" 2>/dev/null; then
+        mv "$decrypted_path" "$pdf_path"
+        log "  Pre-flight: decryption successful"
+      else
+        log "  Pre-flight: qpdf --decrypt failed (likely needs a password); falling through to ignoreEncryption"
+        rm -f "$decrypted_path"
+      fi
+    fi
+  fi
+
   # Create output directory
   local output_dir="${work_dir}/output"
   mkdir -p "$output_dir"
