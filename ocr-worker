@@ -346,6 +346,13 @@ WORKER_HASH="$(get_worker_hash)"
 heartbeat "starting" "worker boot, backend=${backend}"
 
 while true; do
+  # --- Self-heal: ensure all queue subdirs exist every poll ---
+  # Bug 2026-05-27: dirs went missing (Syncthing tombstone fallout from
+  # 2026-05-26 incident), mv to UPLOADS_DIR silently failed for ~25 PDFs
+  # over 4.5 h until queue dirs were manually recreated. Idempotent mkdir
+  # here costs nothing and prevents recurrence.
+  mkdir -p "$PENDING_DIR" "$PRIORITY_DIR" "$PROCESSING_DIR" "$DONE_DIR" "$FAILED_DIR" "$UPLOADS_DIR" 2>/dev/null
+
   # --- Scan inbox for dropped PDFs (Syncthing drop folder) ---
   for inbox_pdf in "$INBOX_DIR"/*.pdf "$INBOX_DIR"/*.PDF; do
     [[ -f "$inbox_pdf" ]] || continue
@@ -363,7 +370,10 @@ while true; do
     log "Inbox: found ${local_basename} ($(( local_size2 / 1024 / 1024 )) MB)"
 
     # Move to uploads and create a job
-    mv "$inbox_pdf" "$UPLOADS_DIR/" 2>/dev/null || continue
+    if ! mv "$inbox_pdf" "$UPLOADS_DIR/" 2>/dev/null; then
+      log "ERROR: mv ${inbox_pdf} -> ${UPLOADS_DIR}/ FAILED — check queue subdirs exist + permissions"
+      continue
+    fi
     ts="$(date +%s)"
     safe_name="$(echo "$local_basename" | sed -E 's/[^a-zA-Z0-9._-]/_/g')"
     cat > "$PENDING_DIR/${ts}_${safe_name}.job" <<JOEOF

@@ -60,3 +60,12 @@ queue/.work_*
 *.swp
 *.swo
 queue/priority/*.job
+
+# OCR worker runtime
+ocr-worker.log
+ocr-worker.log.prev
+.ocr-worker.pid
+
+# queue/ is a symlink to ~/work/comms/queue/worker-status (Syncthing-shared)
+# The dirs are tracked in the comms repo, not here.
+/queue
