@@ -12,7 +12,7 @@
 
 set -euo pipefail
 
-REMOTE_HOST="CloudcityMacMini.local"
+REMOTE_HOST="cloudcitymacmini"
 REMOTE_PDFWS="/Users/esaruoho/work/PDFWorkshop"
 REMOTE_QUEUE="${REMOTE_PDFWS}/queue/pending"
 LOCAL_MODE=false
