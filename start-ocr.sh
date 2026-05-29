@@ -14,6 +14,14 @@ set -euo pipefail
 
 cd "$(dirname "$0")"
 
+# Single-instance guard (daemon mode only) — re-running Cloudcity-Boot must not
+# stack OCR supervisors. On 2026-05-29, 9 ocr-worker procs ran and competing
+# workers SIGTERM'd each other's in-progress jobs. --once stays unguarded.
+case "${*:-}" in
+  *--once*) : ;;
+  *) source /Users/esaruoho/work/comms/scripts/single-instance.sh && single_instance ocr-supervisor ;;
+esac
+
 # Set up Homebrew environment (macOS Apple Silicon)
 if [[ -x /opt/homebrew/bin/brew ]]; then
   eval "$(/opt/homebrew/bin/brew shellenv)"
