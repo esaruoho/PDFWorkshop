@@ -111,16 +111,32 @@ download_pdf() {
   # Handle file:// URLs (local files or SCP'd uploads)
   if [[ "$url" == file://* ]]; then
     local local_path="${url#file://}"
+    local basename
+    basename="$(basename "$local_path")"
     if [[ -f "$local_path" ]]; then
-      local basename
-      basename="$(basename "$local_path")"
       cp "$local_path" "${output_dir}/${basename}"
       echo "${output_dir}/${basename}"
       return 0
-    else
-      log "  ERROR: Local file not found: $local_path" >&2
-      return 1
     fi
+    # SELF-HEAL: the upload copy is gone (e.g. queue/uploads wiped by a stray
+    # `git clean -fdx`). Don't fail the job — recover the original from the
+    # merlib archive on the 4TB drive by matching the basename minus the
+    # <ts>-[ast_<hash>__] submission prefix. Turns an uploads wipe from a
+    # whole-queue failure cascade into a transparent re-copy. (2026-05-29)
+    local _arch="${MERLIB_SOURCES:-/Volumes/CLOUDCITY4TB/merlib-dump/sources}"
+    if [[ -d "$_arch" ]]; then
+      local _key _src
+      _key="$(printf '%s' "$basename" | sed -E 's/^[0-9]{8}-[0-9]{6}-(ast_[0-9a-f]+__)?//')"
+      _src="$(find "$_arch" -iname "$_key" -type f 2>/dev/null | head -1)"
+      if [[ -n "$_src" && -f "$_src" ]]; then
+        log "  SELF-HEAL: upload missing — recovered from archive: $_src" >&2
+        cp "$_src" "${output_dir}/${basename}"
+        echo "${output_dir}/${basename}"
+        return 0
+      fi
+    fi
+    log "  ERROR: Local file not found: $local_path (no archive match for ${basename})" >&2
+    return 1
   fi
 
   # Derive filename from URL
