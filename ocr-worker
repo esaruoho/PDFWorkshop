@@ -127,7 +127,28 @@ download_pdf() {
     if [[ -d "$_arch" ]]; then
       local _key _src
       _key="$(printf '%s' "$basename" | sed -E 's/^[0-9]{8}-[0-9]{6}-(ast_[0-9a-f]+__)?//')"
+      # 1) Exact (sanitized) name match.
       _src="$(find "$_arch" -iname "$_key" -type f 2>/dev/null | head -1)"
+      # 2) Fuzzy fallback. The upload name is SANITIZED (spaces, parens, dots,
+      #    umlauts -> _), but the archive keeps the ORIGINAL name — so an exact
+      #    -iname for the sanitized key misses e.g. "(1964) The New Science -
+      #    Smith.pdf" submitted as "_1964__The_New_Science_-_Smith.pdf". Turn the
+      #    key into a glob (runs of non-alphanumerics -> '*') and accept it ONLY
+      #    if it matches exactly one file, so we never guess between candidates.
+      #    (2026-06-01: without this, 31 jobs from the May-27 batch died
+      #    download_failed when their uploads were cleaned mid-queue.)
+      if [[ -z "$_src" ]]; then
+        local _glob _matches _n
+        _glob="$(printf '%s' "$_key" | sed -E 's/\.[Pp][Dd][Ff]$//; s/[^A-Za-z0-9]+/*/g; s/\*+/*/g')"
+        _matches="$(find "$_arch" -iname "*${_glob}*.pdf" -type f 2>/dev/null)"
+        _n="$(printf '%s\n' "$_matches" | grep -c .)"
+        if [[ "$_n" == "1" ]]; then
+          _src="$_matches"
+          log "  SELF-HEAL: fuzzy-matched sanitized name '${_key}'" >&2
+        elif [[ "$_n" -gt 1 ]]; then
+          log "  SELF-HEAL: ambiguous (${_n} archive matches for '${_key}') — not guessing" >&2
+        fi
+      fi
       if [[ -n "$_src" && -f "$_src" ]]; then
         log "  SELF-HEAL: upload missing — recovered from archive: $_src" >&2
         cp "$_src" "${output_dir}/${basename}"
