@@ -130,47 +130,27 @@ async function ocrPage(base64Data) {
 }
 
 async function buildOcrPdf(pdfBytes, pages) {
-  // ignoreEncryption: true — handle PDFs with owner-password permission flags
-  // (e.g. Internet Archive scans with R=3 P=-3904 DRM). Without this flag,
-  // pdf-lib throws EncryptedPDFError on the load step even when no password
-  // is required, destroying the in-memory OCR'd pages array. See ocr-worker
-  // for the qpdf --decrypt pre-flight that complements this guard.
-  const srcDoc = await PDFDocument.load(pdfBytes, { ignoreEncryption: true });
-  const exportDoc = await PDFDocument.create();
-  const font = await exportDoc.embedFont(StandardFonts.Helvetica);
-
-  for (let i = 0; i < srcDoc.getPageCount(); i++) {
-    const [copiedPage] = await exportDoc.copyPages(srcDoc, [i]);
-    exportDoc.addPage(copiedPage);
-
-    const page = exportDoc.getPage(i);
-    const text = pages[i]?.ocrText ?? "";
-    if (text) {
-      const fontSize = 1;
-      const lines = text.split("\n");
-      let y = page.getHeight() - 10;
-      for (const line of lines) {
-        if (y < 10) break;
-        if (line.trim().startsWith("[IMAGE")) continue;
-        let safeLine = line;
-        try {
-          font.encodeText(line);
-        } catch {
-          safeLine = line
-            .split("")
-            .filter((ch) => {
-              try { font.encodeText(ch); return true; } catch { return false; }
-            })
-            .join("");
-        }
-        if (!safeLine) continue;
-        page.drawText(safeLine, { x: 10, y, size: fontSize, font, color: rgb(0, 0, 0), opacity: 0.01 });
-        y -= fontSize + 1;
-      }
-    }
+  // Build the searchable PDF with PyMuPDF (fitz), NOT pdf-lib copyPages.
+  // pdf-lib copyPages corrupts CCITTFax-G4 image streams -> blank _ocr.pdf on
+  // fax-scanned books (Tensors/GEET/etc.). fitz preserves the page images and
+  // only adds an invisible OCR text layer (render mode 3). Fix 2026-06-01;
+  // companion: apple/bin/ocr-pdf-rebuild + wiki/operations/blank-ocr-pdfs.md.
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "ocrpdf-"));
+  try {
+    const srcPath = path.join(tmp, "src.pdf");
+    const jsonPath = path.join(tmp, "pages.json");
+    const outPath = path.join(tmp, "out.pdf");
+    fs.writeFileSync(srcPath, Buffer.from(pdfBytes));
+    fs.writeFileSync(jsonPath, JSON.stringify(pages.map((pg) => pg.ocrText || "")));
+    const builder = path.join(path.dirname(fileURLToPath(import.meta.url)), "build_ocr_pdf.py");
+    execSync(
+      `python3 ${JSON.stringify(builder)} ${JSON.stringify(srcPath)} ${JSON.stringify(jsonPath)} ${JSON.stringify(outPath)}`,
+      EXEC_OPTS
+    );
+    return fs.readFileSync(outPath);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
   }
-
-  return await exportDoc.save();
 }
 
 // --- Main ---
