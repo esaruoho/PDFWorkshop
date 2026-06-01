@@ -35,8 +35,10 @@ heartbeat() {
   local detail="${2:-}"
   local ts
   ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-  printf '{\n  "ts": "%s",\n  "status": "%s",\n  "detail": "%s",\n  "worker_pid": %s\n}\n' \
-    "$ts" "$status" "$detail" "$$" > "$HEARTBEAT_FILE" 2>/dev/null || true
+  local host
+  host="$(hostname -s 2>/dev/null || hostname)"
+  printf '{\n  "ts": "%s",\n  "host": "%s",\n  "status": "%s",\n  "detail": "%s",\n  "worker_pid": %s\n}\n' \
+    "$ts" "$host" "$status" "$detail" "$$" > "$HEARTBEAT_FILE" 2>/dev/null || true
 }
 
 POLL_IDLE=120    # seconds between checks when queue is empty

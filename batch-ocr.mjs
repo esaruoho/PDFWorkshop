@@ -12,6 +12,7 @@
  */
 
 import fs from "fs";
+import os from "os";
 import path from "path";
 import { execSync } from "child_process";
 import { createCanvas } from "canvas";
@@ -35,8 +36,13 @@ const HEARTBEAT_PATH = path.join(
   "work/comms/queue/ocr-heartbeat.json",
 );
 
+const HOST = os.hostname().split(".")[0];
+
 function writeHeartbeat(state) {
   try {
+    // Stamp host so fleet peers attribute this OCR job to its real machine —
+    // the heartbeat is Syncthing-shared, so without it every Mac claims it.
+    state.host = HOST;
     fs.writeFileSync(HEARTBEAT_PATH, JSON.stringify(state, null, 2) + "\n");
   } catch {
     // Heartbeat is best-effort; never fail a job because of it
