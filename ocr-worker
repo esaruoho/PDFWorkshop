@@ -22,6 +22,7 @@ PROCESSING_DIR="$REPO_DIR/queue/processing"
 DONE_DIR="$REPO_DIR/queue/done"
 FAILED_DIR="$REPO_DIR/queue/failed"
 UPLOADS_DIR="$REPO_DIR/queue/uploads"
+BUMP_INTENTS_DIR="$REPO_DIR/queue/bump-intents"
 RESULTS_DIR="${HOME}/work/comms/queue/ocr-results"
 INBOX_DIR="${HOME}/work/comms/queue/ocr-inbox"
 HEARTBEAT_FILE="${HOME}/work/comms/queue/ocr-heartbeat.json"
@@ -55,6 +56,42 @@ done
 log()  { echo "[$(date +%H:%M:%S)] $*"; }
 idle() { [[ "${VERBOSE:-}" == "1" ]] && log "$*" || true; }
 
+# --- Bump: promote pending jobs matching a bump-intent into priority/ ---
+# A "bump-intent" is a file  queue/bump-intents/<name>.intent  whose first line (or,
+# if empty, its basename) is a case-insensitive substring matched against pending job
+# filenames. Every match is moved to priority/ (which the main loop checks first), so
+# "bump this PDF" = drop one .intent file. Consumed the moment it promotes ≥1 job; an
+# intent that matches nothing EXPIRES after BUMP_TTL_MIN so it can never linger as a
+# dead lever (the failure this whole function exists to kill).
+BUMP_TTL_MIN=120
+consume_bump_intents() {
+  local intent kw job base moved
+  for intent in "$BUMP_INTENTS_DIR"/*.intent; do
+    [[ -e "$intent" ]] || continue                       # no-match glob stays literal
+    kw="$(head -1 "$intent" 2>/dev/null | tr -d '[:space:]')"
+    [[ -z "$kw" ]] && kw="$(basename "$intent" .intent)"
+    [[ -z "$kw" ]] && { rm -f "$intent"; continue; }      # empty intent → drop
+    moved=0
+    for job in "$PENDING_DIR"/*.job; do
+      [[ -e "$job" ]] || continue
+      base="$(basename "$job")"
+      if printf '%s' "$base" | grep -qiF -- "$kw"; then
+        if mv "$job" "$PRIORITY_DIR/" 2>/dev/null; then
+          log "BUMP: promoted ${base} -> priority (intent '${kw}')"
+          moved=$((moved + 1))
+        fi
+      fi
+    done
+    if (( moved > 0 )); then
+      rm -f "$intent"
+      log "bump-intent '${kw}': ${moved} job(s) promoted, intent consumed"
+    elif [[ -n "$(find "$intent" -mmin +"${BUMP_TTL_MIN}" 2>/dev/null)" ]]; then
+      rm -f "$intent"
+      log "bump-intent '${kw}': no pending match in ${BUMP_TTL_MIN}min — expired"
+    fi
+  done
+}
+
 # --- PID file ---
 PIDFILE="$REPO_DIR/.ocr-worker.pid"
 echo $$ > "$PIDFILE"
@@ -81,7 +118,7 @@ check_self_update() {
 }
 
 # --- Ensure directories exist ---
-mkdir -p "$PRIORITY_DIR" "$PENDING_DIR" "$PROCESSING_DIR" "$DONE_DIR" "$FAILED_DIR" "$UPLOADS_DIR" "$RESULTS_DIR" "$INBOX_DIR"
+mkdir -p "$PRIORITY_DIR" "$PENDING_DIR" "$PROCESSING_DIR" "$DONE_DIR" "$FAILED_DIR" "$UPLOADS_DIR" "$BUMP_INTENTS_DIR" "$RESULTS_DIR" "$INBOX_DIR"
 
 # --- Recovery: move stuck processing jobs back to pending ---
 recover_stuck() {
@@ -390,7 +427,7 @@ while true; do
   # 2026-05-26 incident), mv to UPLOADS_DIR silently failed for ~25 PDFs
   # over 4.5 h until queue dirs were manually recreated. Idempotent mkdir
   # here costs nothing and prevents recurrence.
-  mkdir -p "$PENDING_DIR" "$PRIORITY_DIR" "$PROCESSING_DIR" "$DONE_DIR" "$FAILED_DIR" "$UPLOADS_DIR" 2>/dev/null
+  mkdir -p "$PENDING_DIR" "$PRIORITY_DIR" "$PROCESSING_DIR" "$DONE_DIR" "$FAILED_DIR" "$UPLOADS_DIR" "$BUMP_INTENTS_DIR" 2>/dev/null
 
   # --- Scan inbox for dropped PDFs (Syncthing drop folder) ---
   for inbox_pdf in "$INBOX_DIR"/*.pdf "$INBOX_DIR"/*.PDF; do
@@ -425,6 +462,9 @@ submitted_from: inbox
 JOEOF
     log "  Created job from inbox: ${safe_name}"
   done
+
+  # --- Bump: consume bump-intents, promoting matching pending jobs to priority/ ---
+  consume_bump_intents
 
   # Find oldest pending job (FIFO)
   # Priority dir is checked first (LIFO for priority: newest bumped wins)
