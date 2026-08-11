@@ -90,11 +90,12 @@ async function tryMlx(base64Data) {
       }),
       signal: AbortSignal.timeout(120_000),
     });
-    if (!res.ok) return null;
+    if (!res.ok) return { text: null, error: `HTTP ${res.status} ${res.statusText}` };
     const data = await res.json();
-    return data.choices?.[0]?.message?.content ?? null;
-  } catch {
-    return null;
+    const text = data.choices?.[0]?.message?.content ?? null;
+    return { text, error: text ? null : "empty completion" };
+  } catch (e) {
+    return { text: null, error: `${e.name}: ${e.message}` };
   }
 }
 
@@ -111,22 +112,44 @@ async function tryOllama(base64Data) {
       }),
       signal: AbortSignal.timeout(120_000),
     });
-    if (!res.ok) return null;
+    if (!res.ok) return { text: null, error: `HTTP ${res.status} ${res.statusText}` };
     const data = await res.json();
-    return data.response ?? null;
-  } catch {
-    return null;
+    const text = data.response ?? null;
+    return { text, error: text ? null : "empty response" };
+  } catch (e) {
+    return { text: null, error: `${e.name}: ${e.message}` };
   }
 }
 
+// How many times a single page is retried before it is given up on, and how many
+// CONSECUTIVE pages may be given up on before the whole run aborts.
+//
+// 2026-08-11: a 160-page book ran for 4.5 HOURS producing 0 OK / 119 FAILED, pinning
+// ~6 CPU cores the entire time, because (a) every page got exactly one attempt, (b) the
+// backends swallowed their errors with a bare `catch { return null }`, so the log said
+// only "FAILED" with no reason, and (c) nothing ever gave up — it would happily have
+// burned all 160 pages to write an empty file. A broken backend is now detected in
+// ~25 failed calls instead of ~160, and the REASON is printed.
+const MAX_PAGE_ATTEMPTS = Number(process.env.OCR_PAGE_ATTEMPTS || 5);
+const ABORT_AFTER_CONSECUTIVE_FAILS = Number(process.env.OCR_ABORT_AFTER || 5);
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
 async function ocrPage(base64Data) {
-  const mlxResult = await tryMlx(base64Data);
-  if (mlxResult) return { text: mlxResult, backend: "mlx" };
+  let lastError = "unknown";
+  for (let attempt = 1; attempt <= MAX_PAGE_ATTEMPTS; attempt++) {
+    const mlx = await tryMlx(base64Data);
+    if (mlx.text) return { text: mlx.text, backend: "mlx", attempts: attempt };
 
-  const ollamaResult = await tryOllama(base64Data);
-  if (ollamaResult) return { text: ollamaResult, backend: "ollama" };
+    const ollama = await tryOllama(base64Data);
+    if (ollama.text) return { text: ollama.text, backend: "ollama", attempts: attempt };
 
-  return null;
+    lastError = `mlx: ${mlx.error} | ollama: ${ollama.error}`;
+    // Back off a little between attempts — a model still loading, or a transient
+    // out-of-memory, is worth waiting for; hammering it instantly is not.
+    if (attempt < MAX_PAGE_ATTEMPTS) await sleep(1000 * attempt);
+  }
+  return { text: null, error: lastError, attempts: MAX_PAGE_ATTEMPTS };
 }
 
 async function buildOcrPdf(pdfBytes, pages) {
@@ -258,6 +281,7 @@ async function processPdf(pdfPath, outputDir) {
 
   const pages = [];
   let backend = null;
+  let consecutiveFails = 0;
 
   for (let i = 1; i <= numPages; i++) {
     process.stdout.write(`  Page ${i}/${numPages}...`);
@@ -296,10 +320,12 @@ async function processPdf(pdfPath, outputDir) {
 
     const result = await ocrPage(base64);
 
-    if (result) {
+    if (result && result.text) {
       if (!backend) backend = result.backend;
       const chars = result.text.length;
-      process.stdout.write(` ${chars} chars (${result.backend})\n`);
+      const retried = result.attempts > 1 ? ` after ${result.attempts} attempts` : "";
+      process.stdout.write(` ${chars} chars (${result.backend})${retried}\n`);
+      consecutiveFails = 0;
       pages.push({
         pageNumber: i,
         ocrText: result.text,
@@ -307,8 +333,20 @@ async function processPdf(pdfPath, outputDir) {
         history: [],
       });
     } else {
-      process.stdout.write(` FAILED\n`);
+      consecutiveFails++;
+      // Say WHY. A bare "FAILED" is what let a wholly broken backend run for hours.
+      process.stdout.write(` FAILED after ${result?.attempts ?? 1} attempts — ${result?.error ?? "unknown"}\n`);
       pages.push({ pageNumber: i, ocrText: "", source: null, history: [] });
+
+      if (consecutiveFails >= ABORT_AFTER_CONSECUTIVE_FAILS) {
+        const msg =
+          `ABORTING: ${consecutiveFails} consecutive pages failed all ${MAX_PAGE_ATTEMPTS} attempts ` +
+          `(~${consecutiveFails * MAX_PAGE_ATTEMPTS} failed backend calls). The OCR backend is not ` +
+          `working — fix it rather than burning the remaining ${numPages - i} page(s). ` +
+          `Last error — ${result?.error ?? "unknown"}`;
+        process.stdout.write(`\n${msg}\n`);
+        throw new Error(msg);
+      }
     }
 
     // Per-page heartbeat for off-network visibility (survives Syncthing)
