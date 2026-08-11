@@ -27,8 +27,12 @@ const workerPath = __require.resolve("pdfjs-dist/legacy/build/pdf.worker.mjs");
 GlobalWorkerOptions.workerSrc = new URL(`file://${workerPath}`).href;
 
 // --- Config ---
-const MLX_URL = "http://localhost:8080/chat/completions";
-const OLLAMA_URL = "http://localhost:11434/api/generate";
+// The MLX VISION server (Metal GPU), :8081 — NOT :8080. :8080 runs mlx_lm.server (TEXT,
+// Qwen3-14B-MLX-4bit); it advertises GLM-OCR in /v1/models but cannot serve a vision model,
+// so asking it silently dropped every OCR through to Ollama-on-CPU (0 OK / 119 FAILED,
+// ~6 cores for 4.5h, 2026-08-11). Vision lives on :8081 via mlx_vlm.server.
+const MLX_URL = process.env.OCR_MLX_URL || "http://localhost:8081/chat/completions";
+const OLLAMA_URL = process.env.OCR_OLLAMA_URL || "http://localhost:11434/api/generate";
 const OCR_PROMPT =
   "OCR this image. Extract ALL text preserving the original formatting, paragraphs, tables, and formulas. Output only the extracted text.";
 const HEARTBEAT_PATH = path.join(
