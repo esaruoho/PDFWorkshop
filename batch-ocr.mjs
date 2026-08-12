@@ -134,6 +134,12 @@ async function tryOllama(base64Data) {
 // only "FAILED" with no reason, and (c) nothing ever gave up — it would happily have
 // burned all 160 pages to write an empty file. A broken backend is now detected in
 // ~25 failed calls instead of ~160, and the REASON is printed.
+// Empty-result gate thresholds (see the gate before the .txt write). A page counts as
+// having text above MIN_PAGE_CHARS non-whitespace chars; a document must clear MIN_DOC_CHARS
+// in total. Deliberately low — the target is 'literally nothing', not 'a thin page'.
+const MIN_PAGE_CHARS = Number(process.env.OCR_MIN_PAGE_CHARS || 20);
+const MIN_DOC_CHARS = Number(process.env.OCR_MIN_DOC_CHARS || 200);
+
 const MAX_PAGE_ATTEMPTS = Number(process.env.OCR_PAGE_ATTEMPTS || 5);
 const ABORT_AFTER_CONSECUTIVE_FAILS = Number(process.env.OCR_ABORT_AFTER || 5);
 
@@ -391,13 +397,43 @@ async function processPdf(pdfPath, outputDir) {
   // step despite every page having OCR'd successfully. The .txt-first
   // reorder + buildOcrPdf ignoreEncryption: true together prevent recurrence.
 
+  // ---- EMPTY-RESULT GATE (2026-08-12) ----
+  // A result is only a result if it has TEXT. Without this gate the writer below emits
+  // "=== Page 1 ===\n\n=== Page 2 ===\n\n…" for a wholly failed run: a file that is several
+  // KB, looks like output, gets HOMED beside the original, gets enrolled as
+  // to-be-analyzed, and is then handed to the soft/email legs as if it were a document.
+  // Real cases on 2026-08-11: heaviside-1889 (144 page markers, ZERO characters) and a
+  // 160-page book (160 markers, zero). Both were recorded as successful OCR.
+  // "Has bytes" is not "has text" — so measure text with the markers stripped, and FAIL
+  // the job instead of writing a skeleton. Failing re-queues it; a skeleton silently
+  // poisons the archive.
+  const pagesWithText = pages.filter(
+    (pg) => (pg.ocrText || "").replace(/\s+/g, "").length > MIN_PAGE_CHARS
+  ).length;
+  const totalRealChars = pages.reduce(
+    (n, pg) => n + (pg.ocrText || "").replace(/\s+/g, "").length, 0
+  );
+  if (pagesWithText === 0 || totalRealChars < MIN_DOC_CHARS) {
+    const msg =
+      `EMPTY RESULT — refusing to write output for ${baseName}: ` +
+      `${pages.length} page(s), ${pagesWithText} with text, ${totalRealChars} real characters ` +
+      `(need >=1 page and >=${MIN_DOC_CHARS} chars). The OCR backend produced nothing usable; ` +
+      `writing a "=== Page N ===" skeleton would look like success and be homed as a real result. ` +
+      `Fix the backend and re-run — nothing has been written.`;
+    console.error(`\n${msg}\n`);
+    throw new Error(msg);
+  }
+  if (pagesWithText < pages.length) {
+    console.log(`  NOTE: ${pages.length - pagesWithText} of ${pages.length} page(s) came back empty`);
+  }
+
   // 1) Always save plain text extract — never depends on pdf-lib succeeding
   const txtPath = path.join(outputDir, `${baseName}.txt`);
   const txt = pages
     .map((pg) => `=== Page ${pg.pageNumber} ===\n${pg.ocrText || ""}`)
     .join("\n\n");
   fs.writeFileSync(txtPath, txt);
-  console.log(`  Saved: ${txtPath}`);
+  console.log(`  Saved: ${txtPath}  (${pagesWithText}/${pages.length} pages with text, ${totalRealChars.toLocaleString()} chars)`);
 
   // 2) Save .pdfws project (skip for large PDFs — base64 embedding would be too big)
   if (!isLarge) {
