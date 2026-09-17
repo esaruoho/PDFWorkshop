@@ -242,8 +242,14 @@ download_pdf() {
 
 # --- Check OCR backend availability ---
 check_ocr_backend() {
-  # Test MLX
-  if curl -sf --max-time 5 "http://localhost:8080/v1/models" >/dev/null 2>&1; then
+  # :8081, NOT :8080. batch-ocr.mjs sends every OCR request to the mlx_vlm
+  # VISION server on :8081; :8080 is mlx_lm.server (TEXT) and merely advertises
+  # GLM-OCR in /v1/models without being able to serve it. Probing :8080 here
+  # meant this worker logged "backend: mlx" whenever the text server was up,
+  # including when the vision server was down and every page was silently
+  # falling through to Ollama-on-CPU (0 OK / 119 FAILED, ~6 cores for 4.5h,
+  # 2026-08-11). Report the backend that actually does the work.
+  if curl -sf --max-time 5 "http://localhost:8081/v1/models" >/dev/null 2>&1; then
     echo "mlx"
     return 0
   fi
