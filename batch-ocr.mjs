@@ -89,9 +89,12 @@ async function tryMlx(base64Data) {
             ],
           },
         ],
-        max_tokens: 8192,
+        max_tokens: 4096,
         temperature: 0,
       }),
+      // NOTE: mlx-vlm 0.4.4 IGNORES repetition_penalty on GLM-OCR, so this path cannot be
+      // made loop-safe by sampling alone — the num_predict cap above only bounds the damage.
+      // MLX is opt-in (OCR_ALLOW_MLX=1); default is Ollama, which honours repeat_penalty.
       signal: AbortSignal.timeout(120_000),
     });
     if (!res.ok) return { text: null, error: `HTTP ${res.status} ${res.statusText}` };
@@ -113,6 +116,17 @@ async function tryOllama(base64Data) {
         prompt: OCR_PROMPT,
         images: [base64Data],
         stream: false,
+        // Anti-repetition-loop sampling (2026-11-04, Lüst-Schlüter page-10 bug): the
+        // Modelfile defaults (pure-greedy, repeat_penalty ~1.1, uncapped num_predict) let
+        // equation-dense pages fall into a `\frac{}` loop that runs for thousands of tokens.
+        // Ollama's llama.cpp sampler HONOURS these (unlike mlx-vlm 0.4.4).
+        options: {
+          repeat_penalty: 1.3,
+          temperature: 0.1,
+          top_p: 0.8,
+          top_k: 20,
+          num_predict: 4096,
+        },
       }),
       signal: AbortSignal.timeout(120_000),
     });
@@ -143,18 +157,29 @@ const MIN_DOC_CHARS = Number(process.env.OCR_MIN_DOC_CHARS || 200);
 const MAX_PAGE_ATTEMPTS = Number(process.env.OCR_PAGE_ATTEMPTS || 5);
 const ABORT_AFTER_CONSECUTIVE_FAILS = Number(process.env.OCR_ABORT_AFTER || 5);
 
+// Backend preference: default to Ollama (its llama.cpp sampler honours repeat_penalty, so
+// the anti-loop options in tryOllama actually work). mlx-vlm 0.4.4 IGNORES repetition_penalty
+// on GLM-OCR, producing catastrophic repetition loops (2026-04-14 note; 2026-11-04 Lüst-Schlüter
+// page-10 `\frac{}` x63 loop). MLX is therefore opt-in only.
+const ALLOW_MLX = process.env.OCR_ALLOW_MLX === "1";
+
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 async function ocrPage(base64Data) {
   let lastError = "unknown";
   for (let attempt = 1; attempt <= MAX_PAGE_ATTEMPTS; attempt++) {
-    const mlx = await tryMlx(base64Data);
-    if (mlx.text) return { text: mlx.text, backend: "mlx", attempts: attempt };
+    // Ollama first (loop-safe). MLX only when explicitly opted in (it ignores repeat penalty).
+    let mlxErr = "skipped (MLX disabled; set OCR_ALLOW_MLX=1 to enable)";
+    if (ALLOW_MLX) {
+      const mlx = await tryMlx(base64Data);
+      if (mlx.text) return { text: mlx.text, backend: "mlx", attempts: attempt };
+      mlxErr = mlx.error;
+    }
 
     const ollama = await tryOllama(base64Data);
     if (ollama.text) return { text: ollama.text, backend: "ollama", attempts: attempt };
 
-    lastError = `mlx: ${mlx.error} | ollama: ${ollama.error}`;
+    lastError = `mlx: ${mlxErr} | ollama: ${ollama.error}`;
     // Back off a little between attempts — a model still loading, or a transient
     // out-of-memory, is worth waiting for; hammering it instantly is not.
     if (attempt < MAX_PAGE_ATTEMPTS) await sleep(1000 * attempt);
@@ -510,31 +535,16 @@ async function main() {
 
   fs.mkdirSync(outputDir, { recursive: true });
 
-  // Check GLM-OCR server availability (lightweight health checks).
-  //
-  // This preflight probed :8080 while every actual OCR call goes to MLX_URL on
-  // :8081 (see the config comment at the top of this file). The port fix of
-  // 2026-08-11 corrected the REQUEST path but left this CHECK pointing at the
-  // text server, so the two disagreed about what "MLX is up" means. Two bad
-  // outcomes, neither cosmetic:
-  //   · :8080 up, :8081 down  -> preflight says "MLX (:8080)", then every page
-  //     falls through to Ollama-on-CPU. That is the 0 OK / 119 FAILED shape.
-  //   · :8080 down, :8081 up  -> preflight declares "No GLM-OCR server found"
-  //     and EXITS, refusing a job the vision server could have done fine.
-  // So: probe the vision server we actually call, on the same URL constant.
+  // Check GLM-OCR server availability (lightweight health checks). Ollama is the
+  // preferred/loop-safe backend AND ocrPage()'s runtime engine; probe it regardless.
+  // The mlx vision server (MLX_URL, :8081 — NOT the :8080 text server the old preflight
+  // wrongly probed) is checked only when opted in (OCR_ALLOW_MLX=1), because mlx-vlm 0.4.4
+  // ignores repeat_penalty and loops on equation pages.
   const mlxHealth = new URL(MLX_URL);
   const MLX_HEALTH_URL = `${mlxHealth.protocol}//${mlxHealth.host}/v1/models`;
 
   let testMlx = false;
   let testOllama = false;
-  try {
-    const r = await fetch(MLX_HEALTH_URL, { signal: AbortSignal.timeout(5000) });
-    testMlx = r.ok;
-  } catch {}
-  // Probe Ollama regardless of the MLX result: it is the RUNTIME FALLBACK that
-  // ocrPage() reaches for on every failed page, not an alternative we pick once
-  // at startup. Knowing at preflight whether the safety net is actually strung
-  // is the difference between a slow job and 119 failed pages.
   try {
     const r = await fetch("http://localhost:11434/api/tags", { signal: AbortSignal.timeout(5000) });
     if (r.ok) {
@@ -542,6 +552,12 @@ async function main() {
       testOllama = d.models?.some(m => m.name?.includes("glm-ocr")) ?? false;
     }
   } catch {}
+  if (ALLOW_MLX) {
+    try {
+      const r = await fetch(MLX_HEALTH_URL, { signal: AbortSignal.timeout(5000) });
+      testMlx = r.ok;
+    } catch {}
+  }
 
   if (!testMlx && !testOllama) {
     console.error(`No GLM-OCR server found. Start MLX vision (${MLX_HEALTH_URL}) or Ollama (:11434) first.`);
