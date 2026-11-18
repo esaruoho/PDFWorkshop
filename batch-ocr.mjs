@@ -14,7 +14,7 @@
 import fs from "fs";
 import os from "os";
 import path from "path";
-import { execSync } from "child_process";
+import { execSync, spawnSync } from "child_process";
 import { createCanvas } from "canvas";
 import { getDocument, GlobalWorkerOptions } from "pdfjs-dist/legacy/build/pdf.mjs";
 import { PDFDocument, rgb, StandardFonts } from "pdf-lib";
@@ -318,7 +318,20 @@ async function processPdf(pdfPath, outputDir) {
   let backend = null;
   let consecutiveFails = 0;
 
+  // Page-level preemption: on a LONG job, between pages, let the worker run any
+  // bumped or short (<= OCR_SHORT_PAGES) jobs, then carry on. Throttled.
+  const PREEMPT_CMD = process.env.OCR_PREEMPT_CMD || "";
+  const SHORT_PAGES = Number(process.env.OCR_SHORT_PAGES || 30);
+  const PREEMPT_EVERY_MS = Number(process.env.OCR_PREEMPT_EVERY_MS || 60000);
+  let lastPreempt = Date.now();
+
   for (let i = 1; i <= numPages; i++) {
+    if (PREEMPT_CMD && numPages > SHORT_PAGES && i > 1 && Date.now() - lastPreempt >= PREEMPT_EVERY_MS) {
+      lastPreempt = Date.now();
+      const r = spawnSync("/bin/bash", ["-c", PREEMPT_CMD], { stdio: "inherit", env: { ...process.env, OCR_PREEMPT_CMD: "" } });
+      if (r.status !== 0) console.log(`  (preempt hook exited ${r.status}; continuing)`);
+      lastPreempt = Date.now();
+    }
     process.stdout.write(`  Page ${i}/${numPages}...`);
 
     let base64;
