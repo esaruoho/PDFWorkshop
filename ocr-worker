@@ -46,19 +46,16 @@ heartbeat() {
 POLL_IDLE=120    # seconds between checks when queue is empty
 POLL_ACTIVE=10   # seconds between jobs
 RUN_ONCE=false
-# --serve-short: page-level preemption. batch-ocr.mjs calls this (via
-# OCR_PREEMPT_CMD) between pages of a LONG job. It turns inbox PDFs into jobs,
-# runs every bumped job + every pending job with <= OCR_SHORT_PAGES pages, then
-# exits so the long job resumes. No pidfile, no recover_stuck (that would move
-# the paused long job out of processing/), no nested preemption.
-SERVE_SHORT=false
-OCR_SHORT_PAGES="${OCR_SHORT_PAGES:-30}"
 
 for arg in "$@"; do
   case "$arg" in
     --once)    RUN_ONCE=true ;;
     --verbose) export VERBOSE=1 ;;
-    --serve-short) SERVE_SHORT=true ;;
+    # Preemption was removed (2026-11-19: it starved long jobs forever). A
+    # batch-ocr.mjs already running with the old code may still call
+    # `ocr-worker --serve-short` between pages — exit at once so it just
+    # carries on, instead of starting a nested main loop.
+    --serve-short) exit 0 ;;
   esac
 done
 
@@ -110,11 +107,10 @@ consume_bump_intents() {
 
 # --- PID file ---
 PIDFILE="$REPO_DIR/.ocr-worker.pid"
-if [[ "$SERVE_SHORT" != true ]]; then
-  echo $$ > "$PIDFILE"
-  cleanup() { rm -f "$PIDFILE"; }
-  trap cleanup EXIT
-fi
+echo $$ > "$PIDFILE"
+
+cleanup() { rm -f "$PIDFILE"; }
+trap cleanup EXIT
 trap 'log "Woken by signal"' USR1
 
 # --- Self-update hash ---
@@ -421,8 +417,37 @@ EOF
   return 0
 }
 
-# --- Inbox: turn dropped PDFs into pending jobs ---
-scan_inbox() {
+# --- Main loop ---
+log "=== PDFWorkshop OCR Worker ==="
+log "Queue:   ${PENDING_DIR}"
+log "Inbox:   ${INBOX_DIR} (drop PDFs here)"
+log "Results: ${RESULTS_DIR} (Syncthing)"
+log "PID:     $$ (${PIDFILE})"
+log ""
+
+# Check OCR backend
+backend="$(check_ocr_backend || true)"
+if [[ "$backend" == "none" ]]; then
+  log "WARNING: No OCR backend detected (MLX :8080 / Ollama :11434)"
+  log "Jobs will fail until a backend is available."
+else
+  log "OCR backend: ${backend}"
+fi
+
+# Recover any stuck jobs
+recover_stuck
+WORKER_HASH="$(get_worker_hash)"
+
+heartbeat "starting" "worker boot, backend=${backend}"
+
+while true; do
+  # --- Self-heal: ensure all queue subdirs exist every poll ---
+  # Bug 2026-05-27: dirs went missing (Syncthing tombstone fallout from
+  # 2026-05-26 incident), mv to UPLOADS_DIR silently failed for ~25 PDFs
+  # over 4.5 h until queue dirs were manually recreated. Idempotent mkdir
+  # here costs nothing and prevents recurrence.
+  mkdir -p "$PENDING_DIR" "$PRIORITY_DIR" "$PROCESSING_DIR" "$DONE_DIR" "$FAILED_DIR" "$UPLOADS_DIR" "$BUMP_INTENTS_DIR" "$SYNCED_BUMP_DIR" 2>/dev/null
+
   # --- Scan inbox for dropped PDFs (Syncthing drop folder) ---
   for inbox_pdf in "$INBOX_DIR"/*.pdf "$INBOX_DIR"/*.PDF; do
     [[ -f "$inbox_pdf" ]] || continue
@@ -456,91 +481,6 @@ submitted_from: inbox
 JOEOF
     log "  Created job from inbox: ${safe_name}"
   done
-}
-
-# --- Page count of a job's PDF (file:// targets only); empty if unknown ---
-job_pages() {
-  local target path n
-  target="$(parse_job "$1" "target")"
-  [[ "$target" == file://* ]] || return 0
-  path="${target#file://}"
-  [[ -f "$path" ]] || return 0
-  n="$(pdfinfo "$path" 2>/dev/null | awk '/^Pages:/{print $2}')"
-  if [[ -z "$n" ]]; then
-    n="$(mdls -raw -name kMDItemNumberOfPages "$path" 2>/dev/null)"
-    [[ "$n" =~ ^[0-9]+$ ]] || n=""
-  fi
-  echo "$n"
-}
-
-# --- Next job that may run while a long job is paused: bumped, or short ---
-next_short_job() {
-  local j n
-  j="$(ls -t "$PRIORITY_DIR"/*.job 2>/dev/null | head -1 || true)"
-  [[ -n "$j" ]] && { echo "$j"; return 0; }
-  for j in $(ls -tr "$PENDING_DIR"/*.job 2>/dev/null); do
-    n="$(job_pages "$j")"
-    if [[ -n "$n" && "$n" -le "$OCR_SHORT_PAGES" ]]; then echo "$j"; return 0; fi
-  done
-  return 0
-}
-
-serve_short() {
-  unset OCR_PREEMPT_CMD   # never nest a second preemption
-  scan_inbox
-  consume_bump_intents
-  local j served=0
-  while j="$(next_short_job)"; [[ -n "$j" ]]; do
-    log ">>> PREEMPT: running short/bumped job while long job is paused: $(basename "$j" .job)"
-    heartbeat "preempt_job" "$(basename "$j" .job)"
-    process_job "$j" || true
-    served=$((served+1))
-  done
-  (( served > 0 )) && log "<<< PREEMPT: ${served} job(s) served, resuming long job"
-  return 0
-}
-
-if [[ "$SERVE_SHORT" == true ]]; then
-  serve_short
-  exit 0
-fi
-
-# Long jobs call back into us between pages (see batch-ocr.mjs).
-export OCR_PREEMPT_CMD="${OCR_PREEMPT_CMD-$REPO_DIR/ocr-worker --serve-short}"
-export OCR_SHORT_PAGES
-
-# --- Main loop ---
-log "=== PDFWorkshop OCR Worker ==="
-log "Queue:   ${PENDING_DIR}"
-log "Inbox:   ${INBOX_DIR} (drop PDFs here)"
-log "Results: ${RESULTS_DIR} (Syncthing)"
-log "PID:     $$ (${PIDFILE})"
-log ""
-
-# Check OCR backend
-backend="$(check_ocr_backend || true)"
-if [[ "$backend" == "none" ]]; then
-  log "WARNING: No OCR backend detected (MLX :8080 / Ollama :11434)"
-  log "Jobs will fail until a backend is available."
-else
-  log "OCR backend: ${backend}"
-fi
-
-# Recover any stuck jobs
-recover_stuck
-WORKER_HASH="$(get_worker_hash)"
-
-heartbeat "starting" "worker boot, backend=${backend}"
-
-while true; do
-  # --- Self-heal: ensure all queue subdirs exist every poll ---
-  # Bug 2026-05-27: dirs went missing (Syncthing tombstone fallout from
-  # 2026-05-26 incident), mv to UPLOADS_DIR silently failed for ~25 PDFs
-  # over 4.5 h until queue dirs were manually recreated. Idempotent mkdir
-  # here costs nothing and prevents recurrence.
-  mkdir -p "$PENDING_DIR" "$PRIORITY_DIR" "$PROCESSING_DIR" "$DONE_DIR" "$FAILED_DIR" "$UPLOADS_DIR" "$BUMP_INTENTS_DIR" "$SYNCED_BUMP_DIR" 2>/dev/null
-
-  scan_inbox
 
   # --- Bump: consume bump-intents, promoting matching pending jobs to priority/ ---
   consume_bump_intents
