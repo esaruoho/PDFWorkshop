@@ -106,6 +106,32 @@ async function tryMlx(base64Data) {
   }
 }
 
+// GPU-YIELD v1 (2026-11-20). The cloudcity-llm mailer's MLX brain (Qwen3-4B, :8080) shares the Mini's
+// one Metal GPU with this OCR; while OCR ran, a 2-token MLX reply took 330s+, so every mail dropped its
+// MLX section. The mailer now writes OCR_YIELD_FILE (JSON {until: epoch-ms, by}) while it writes that
+// section; between pages we wait while it is fresh. Anti-starvation (the 21h stall that got page-level
+// preemption reverted in e09ae27): every flag expires by itself (wait capped at OCR_YIELD_MAX_MS), and
+// after any yield at least OCR_YIELD_MIN_PAGES pages run before we yield again.
+const OCR_YIELD_FILE = process.env.OCR_YIELD_FILE || path.join(os.homedir(), ".cache/cloudcity/ocr-gpu-yield.json");
+const OCR_YIELD_MAX_MS = Number(process.env.OCR_YIELD_MAX_MS || 15 * 60 * 1000);
+const OCR_YIELD_MIN_PAGES = Number(process.env.OCR_YIELD_MIN_PAGES || 3);
+let pagesSinceYield = Infinity;
+async function gpuYield() {
+  if (pagesSinceYield < OCR_YIELD_MIN_PAGES) { pagesSinceYield++; return; }
+  const start = Date.now();
+  let said = false;
+  for (;;) {
+    let until = 0, by = "?";
+    try { const j = JSON.parse(fs.readFileSync(OCR_YIELD_FILE, "utf8")); until = Number(j.until) || 0; by = j.by || "?"; }
+    catch { until = 0; }
+    if (until <= Date.now() || Date.now() - start >= OCR_YIELD_MAX_MS) break;
+    if (!said) { process.stdout.write(` [yielding GPU to ${by}]`); said = true; }
+    await new Promise((r) => setTimeout(r, 2000));
+  }
+  if (said) { process.stdout.write(` [resumed after ${Math.round((Date.now() - start) / 1000)}s]`); pagesSinceYield = 1; }
+  else pagesSinceYield++;
+}
+
 async function tryOllama(base64Data) {
   try {
     const res = await fetch(OLLAMA_URL, {
@@ -320,6 +346,7 @@ async function processPdf(pdfPath, outputDir) {
 
   for (let i = 1; i <= numPages; i++) {
     process.stdout.write(`  Page ${i}/${numPages}...`);
+    await gpuYield();
 
     let base64;
     if (usePyMuPDF) {
