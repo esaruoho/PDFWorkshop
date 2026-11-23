@@ -132,7 +132,7 @@ async function gpuYield() {
   else pagesSinceYield++;
 }
 
-async function tryOllama(base64Data) {
+async function tryOllama(base64Data, optOverride = {}) {
   try {
     const res = await fetch(OLLAMA_URL, {
       method: "POST",
@@ -152,6 +152,7 @@ async function tryOllama(base64Data) {
           top_p: 0.8,
           top_k: 20,
           num_predict: 4096,
+          ...optOverride,
         },
       }),
       signal: AbortSignal.timeout(120_000),
@@ -191,6 +192,39 @@ const ALLOW_MLX = process.env.OCR_ALLOW_MLX === "1";
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+
+// ---- page-level repetition-loop guard (2026-11-23) ----
+// A page "loops" when one line is enormous, or when a 120-char window recurs >= 6 times.
+// Legit pages (tables, claim lists) repeat phrases, but not 120-char windows six times.
+const LOOP_LINE_CHARS = Number(process.env.OCR_LOOP_LINE_CHARS || 5000);
+function looksLooped(text) {
+  if (!text) return false;
+  if (text.split("\n").some((ln) => ln.length > LOOP_LINE_CHARS)) return true;
+  const seen = new Map();
+  for (let i = 0; i + 120 <= text.length; i += 40) {
+    const k = text.slice(i, i + 120);
+    const n = (seen.get(k) || 0) + 1;
+    if (n >= 6) return true;
+    seen.set(k, n);
+  }
+  return false;
+}
+// Cut the text where the repeated window first recurs (keeps everything read before the loop).
+function truncateLoop(text) {
+  const first = new Map();
+  for (let i = 0; i + 120 <= text.length; i += 40) {
+    const k = text.slice(i, i + 120);
+    if (first.has(k)) return text.slice(0, i);
+    first.set(k, i);
+  }
+  return text;
+}
+// Escalating anti-repetition sampling, tried ONLY for a page that looped.
+const LOOP_ESCALATION = [
+  { repeat_penalty: 1.5, temperature: 0.3, num_predict: 3072 },
+  { repeat_penalty: 1.8, temperature: 0.5, top_k: 40, num_predict: 2048 },
+];
+
 async function ocrPage(base64Data) {
   let lastError = "unknown";
   for (let attempt = 1; attempt <= MAX_PAGE_ATTEMPTS; attempt++) {
@@ -203,7 +237,26 @@ async function ocrPage(base64Data) {
     }
 
     const ollama = await tryOllama(base64Data);
-    if (ollama.text) return { text: ollama.text, backend: "ollama", attempts: attempt };
+    if (ollama.text) {
+      // 2026-11-23 page-level loop guard: a looped page used to be accepted as "OK", and the only
+      // remedy was re-OCRing the whole document — which, at near-greedy sampling, loops on the SAME
+      // page again (Logan US2078880 p.15, US2689328 p.3, US2260146 p.19). Now each page is checked
+      // and ONLY a looped page is retried, with progressively stronger anti-repetition sampling.
+      if (!looksLooped(ollama.text)) return { text: ollama.text, backend: "ollama", attempts: attempt };
+      process.stdout.write(` [loop detected — escalating]`);
+      let best = ollama.text;
+      for (const esc of LOOP_ESCALATION) {
+        const r = await tryOllama(base64Data, esc);
+        if (r.text && !looksLooped(r.text)) {
+          return { text: r.text, backend: "ollama", attempts: attempt, loopRepaired: esc };
+        }
+        if (r.text && r.text.length < best.length) best = r.text;
+      }
+      // Every escalation still looped: keep the text up to the start of the loop and MARK it, so
+      // downstream (convey ocrquality / ocr-repair) knows exactly which page still needs a witness.
+      return { text: truncateLoop(best) + "\n[OCR-LOOP-UNRESOLVED: page text truncated at repetition]",
+               backend: "ollama", attempts: attempt, loopUnresolved: true };
+    }
 
     lastError = `mlx: ${mlxErr} | ollama: ${ollama.error}`;
     // Back off a little between attempts — a model still loading, or a transient
