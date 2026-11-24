@@ -133,15 +133,21 @@ check_self_update() {
 # --- Ensure directories exist ---
 mkdir -p "$PRIORITY_DIR" "$PENDING_DIR" "$PROCESSING_DIR" "$DONE_DIR" "$FAILED_DIR" "$UPLOADS_DIR" "$BUMP_INTENTS_DIR" "$SYNCED_BUMP_DIR" "$RESULTS_DIR" "$INBOX_DIR"
 
-# --- Recovery: move stuck processing jobs back to pending ---
+# --- Recovery: an interrupted job resumes FIRST ---
+# A job still in processing/ at boot was cut off mid-OCR (worker killed by a Cloudcity
+# restart). It used to go back to pending/, which is FIFO by mtime, so a freshly bumped job
+# lost its priority and landed behind hundreds of older jobs: it seemed to vanish
+# (2026-11-24: adams.pdf, bumped, interrupted at 13:52, sent behind 431 pending jobs).
+# Now it goes to priority/ and is touched, so it is the very next job (priority = newest first).
 recover_stuck() {
   local stuck
   stuck="$(ls "$PROCESSING_DIR"/*.job 2>/dev/null || true)"
   if [[ -n "$stuck" ]]; then
-    log "Recovering stuck jobs from processing/"
+    log "Recovering interrupted jobs from processing/ -> priority/ (resume first)"
+    local IFS=$'\n'
     for f in $stuck; do
-      mv "$f" "$PENDING_DIR/"
-      log "  Recovered: $(basename "$f")"
+      mv "$f" "$PRIORITY_DIR/" && touch "$PRIORITY_DIR/$(basename "$f")"
+      log "  Resuming next: $(basename "$f")"
     done
   fi
 }
