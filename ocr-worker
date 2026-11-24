@@ -27,6 +27,7 @@ SYNCED_BUMP_DIR="${HOME}/work/comms/queue/ocr-bump-intents"   # laptop drops bum
 RESULTS_DIR="${HOME}/work/comms/queue/ocr-results"
 INBOX_DIR="${HOME}/work/comms/queue/ocr-inbox"
 HEARTBEAT_FILE="${HOME}/work/comms/queue/ocr-heartbeat.json"
+INTERRUPTED_LOG="${HOME}/work/comms/queue/ocr-interrupted.jsonl"
 OCR_SCRIPT="$REPO_DIR/batch-ocr.mjs"
 
 # Off-network visibility — write a JSON heartbeat so the local Mac can tell
@@ -146,6 +147,13 @@ recover_stuck() {
     log "Recovering interrupted jobs from processing/ -> priority/ (resume first)"
     local IFS=$'\n'
     for f in $stuck; do
+      # Durable record (the pane log is lost on restart): stamp the job and append to a
+      # synced ledger so "which jobs were cut off?" is answerable from the laptop.
+      # Feature card: features/ocr-restart-recovery.feature
+      local _ts; _ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+      echo "interrupted: ${_ts}" >> "$f"
+      printf '{"ts":"%s","host":"%s","job":"%s","action":"resumed-to-priority"}\n' \
+        "$_ts" "$(hostname -s)" "$(basename "$f" .job)" >> "$INTERRUPTED_LOG" 2>/dev/null || true
       mv "$f" "$PRIORITY_DIR/" && touch "$PRIORITY_DIR/$(basename "$f")"
       log "  Resuming next: $(basename "$f")"
     done
